@@ -1,0 +1,30 @@
+{
+  "name": "reops-slack-bots",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.4.0",
+  "scripts": {
+    "dev": "next dev -p 9092",
+    "build": "next build",
+    "start": "next start -p 9092",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@navikt/aksel-icons": "8.15.0",
+    "@navikt/ds-css": "8.15.0",
+    "@navikt/ds-react": "8.15.0",
+    "@navikt/oasis": "4.1.1",
+    "@slack/web-api": "^8.2.0",
+    "next": "^16.2.10",
+    "pg": "^8.23.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3"
+  }
+}

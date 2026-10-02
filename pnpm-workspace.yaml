@@ -1,0 +1,10 @@
+# pnpm v11 workspace settings
+# https://pnpm.io/settings
+
+# Don't install sharp — Next.js image optimization, not needed here
+ignoredOptionalDependencies:
+  - sharp
+
+# Only install packages that have been published for at least 1 day.
+# Default in pnpm v11 is already 1440, being explicit here.
+minimumReleaseAge: 1440

@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.pnpm-store
+*.log
+npm-debug.log*
+.env*
+!.env.example
+.vscode
+.idea
+coverage
