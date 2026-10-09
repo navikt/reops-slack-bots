@@ -26,7 +26,7 @@ jobs:
           build_args: |
             GIT_SHA=${{ github.sha }}
           build_secrets: |
-            "NODE_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}"
+            "NODE_AUTH_TOKEN=${{ secrets.READER_TOKEN }}"
     outputs:
       image: ${{ steps.docker-build-push.outputs.image }}
 
