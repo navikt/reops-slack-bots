@@ -8,3 +8,4 @@ ignoredOptionalDependencies:
 # Only install packages that have been published for at least 1 day.
 # Default in pnpm v11 is already 1440, being explicit here.
 minimumReleaseAge: 1440
+

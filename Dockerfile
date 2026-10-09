@@ -8,11 +8,21 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 USER root
-RUN corepack enable && corepack prepare pnpm@11.4.0 --activate
+# pnpm 12 is a native binary. Wolfi base has no curl/wget, so fetch the
+# standalone binary from GitHub releases via node. Keep packageManager in
+# package.json in sync with this version.
+COPY scripts/install-pnpm.mjs /tmp/install-pnpm.mjs
+RUN node /tmp/install-pnpm.mjs 12.11.1 /opt/pnpm /usr/local/bin/pnpm && \
+    rm /tmp/install-pnpm.mjs && \
+    pnpm --version
 USER node
 
-COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# minimumReleaseAge policy queries the registry for every package; @navikt/*
+# lives on GitHub Packages, which 401s without a token -> policy would fail.
+RUN --mount=type=secret,id=NODE_AUTH_TOKEN,uid=65532 \
+    pnpm config set "//npm.pkg.github.com/:_authToken" "$(cat /run/secrets/NODE_AUTH_TOKEN)" && \
+    pnpm install --frozen-lockfile
 
 COPY --chown=node:node . .
 
