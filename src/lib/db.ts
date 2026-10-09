@@ -68,6 +68,13 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return getPool().query<T>(text, params);
 }
 
+let migrationsCompleted = false;
+
+/** Whether boot migrations have finished. Gates the readiness probe. */
+export function migrationsDone(): boolean {
+  return migrationsCompleted;
+}
+
 export async function runMigrations(): Promise<void> {
   const p = getPool();
 
@@ -100,6 +107,7 @@ export async function runMigrations(): Promise<void> {
       throw err;
     }
   }
+  migrationsCompleted = true;
 }
 
 // ── Domain helpers ────────────────────────────────────────────────────────────

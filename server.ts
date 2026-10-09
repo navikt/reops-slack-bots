@@ -12,7 +12,19 @@ export async function startServer(): Promise<void> {
     return;
   }
 
-  await runMigrations();
+  log({ event: "server.migrations_start" });
+  try {
+    await runMigrations();
+    log({ event: "server.migrations_done" });
+  } catch (err) {
+    // Without a migrated schema every request fails confusingly later
+    // ("relation does not exist") — crash instead; K8s restarts us.
+    logError({
+      event: "server.migrations_failed",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1);
+  }
 
   const jobs: BotJob[] = [
     {

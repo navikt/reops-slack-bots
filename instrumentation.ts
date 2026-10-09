@@ -16,6 +16,9 @@ export async function register() {
           message: err instanceof Error ? err.message : String(err),
         }),
       );
+      // A half-started server that never migrated is worse than a crash —
+      // K8s will restart us and the crash loop makes the failure visible.
+      process.exit(1);
     });
   }
 }
