@@ -1,20 +1,20 @@
-import { BodyLong, Box, Heading, Link, VStack } from "@navikt/ds-react";
+import { BodyLong, Heading, Link, Page, VStack } from "@navikt/ds-react";
+import { PageBlock } from "@navikt/ds-react/Page";
 
 export default function NotFoundPage() {
   return (
-    <Box padding="space-32" asChild>
-      <main>
+    <PageBlock as="main" width="lg" gutters>
+      <div style={{ paddingBlock: "2rem" }}>
         <VStack gap="space-16" align="start" style={{ maxWidth: "42rem" }}>
           <Heading level="1" size="large">
-            Fann ikkje sida
+            Page not found
           </Heading>
           <BodyLong>
-            Denne adressa finst ikkje. Kanskje lenkja er gammal, eller det har
-            smytt seg inn ein skrivefeil?
+            This address does not exist. Old link or typo.
           </BodyLong>
-          <Link href="/">Til forsida</Link>
+          <Link href="/">Back to front page</Link>
         </VStack>
-      </main>
-    </Box>
+      </div>
+    </PageBlock>
   );
 }

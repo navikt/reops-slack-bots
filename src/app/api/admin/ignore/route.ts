@@ -14,46 +14,38 @@ export async function POST(req: Request): Promise<Response> {
   const auth = await requireReopsTeamMember(req);
   if (auth.status !== "ok") return authStatusToResponse(auth.status);
 
-  let body: { slackId?: string; kind?: string; label?: string };
+  let body: { email?: string; label?: string; navIdent?: string };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: "Malformed JSON" }, { status: 400 });
   }
 
-  const slackId = body.slackId?.trim();
-  const kind = body.kind?.trim();
-  if (!slackId || (kind !== "user" && kind !== "usergroup")) {
-    return NextResponse.json(
-      { error: "slackId og kind ('user' | 'usergroup') er påkrevd" },
-      { status: 400 },
-    );
-  }
-  if (kind === "user" && !slackId.startsWith("U")) {
-    return NextResponse.json({ error: "Bruker-IDer starter med U (f.eks. U01234567)" }, { status: 400 });
-  }
-  if (kind === "usergroup" && !slackId.startsWith("S")) {
-    return NextResponse.json({ error: "Brukergruppe-IDer starter med S (f.eks. S01234567)" }, { status: 400 });
+  const email = body.email?.trim().toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return NextResponse.json({ error: "A valid email is required" }, { status: 400 });
   }
 
   const label = body.label?.trim() || null;
+  const navIdent = body.navIdent?.trim() || null;
 
   try {
-    const row = await addIgnoreEntry(slackId, kind, label);
-    log({ event: "admin.ignore_added", slack_id: slackId, kind, by: auth.user.navIdent });
+    const row = await addIgnoreEntry(email, label, navIdent);
+    log({ event: "admin.ignore_added", email, by: auth.user.navIdent });
     return NextResponse.json({
       id: row.id,
-      slackId: row.slack_id,
       kind: row.kind,
       label: row.label,
+      navIdent: row.nav_ident,
+      email: row.email,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("unique")) {
-      return NextResponse.json({ error: "Denne ID-en er allerede i ignorarlista" }, { status: 409 });
+      return NextResponse.json({ error: "Already on the list" }, { status: 409 });
     }
     logError({ event: "admin.ignore_add_failed", message });
-    return NextResponse.json({ error: "Kunne ikke legge til i ignorarlista" }, { status: 500 });
+    return NextResponse.json({ error: "Could not add to the list" }, { status: 500 });
   }
 }
 

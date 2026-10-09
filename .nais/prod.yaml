@@ -48,7 +48,7 @@ spec:
     outbound:
       external:
         # Slack Web API (slack.com/api) — chat.postMessage, conversations.history,
-        # reactions.*, usergroups.users.list, chat.getPermalink
+        # reactions.*, users.lookupByEmail
         - host: slack.com
         # Interactivity response_url webhooks (hooks.slack.com/actions/...)
         - host: hooks.slack.com

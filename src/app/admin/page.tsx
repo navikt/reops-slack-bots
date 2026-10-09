@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
-import { Alert, BodyShort, Box, Heading, VStack } from "@navikt/ds-react";
+import { Alert, BodyShort, Heading, Page, VStack } from "@navikt/ds-react";
+import { PageBlock } from "@navikt/ds-react/Page";
 import { requireReopsTeamMember } from "../../lib/auth";
 import { AdminClient } from "./AdminClient";
 
@@ -12,43 +13,41 @@ export default async function AdminPage() {
   const auth = await requireReopsTeamMember(req);
 
   return (
-    <Box padding="space-32" asChild>
-      <main>
+    <PageBlock as="main" width="lg" gutters>
+      <div style={{ paddingBlock: "2rem" }}>
         <VStack gap="space-24" align="start">
           <Heading level="1" size="large">
-            Ubesvarte meldingar — admin
+            Unanswered messages admin
           </Heading>
 
           {auth.status === "unauthenticated" && (
             <Alert variant="warning">
-              Du er ikkje innlogga. Logg inn med Nav-kontoen din for å sjå denne
-              sida.
+              Not logged in. Log in with your Nav account.
             </Alert>
           )}
 
           {auth.status === "forbidden" && (
             <Alert variant="error">
-              Denne sida er berre tilgjengeleg for Team ResearchOps.
+              Team ResearchOps only.
             </Alert>
           )}
 
           {auth.status === "unavailable" && (
             <Alert variant="error">
-              Kunne ikkje verifisere teammedlemskap (Team Catalog utilgjengeleg).
-              Prøv igjen seinare.
+              Could not verify team membership. Try again later.
             </Alert>
           )}
 
           {auth.status === "ok" && (
             <>
               <BodyShort>
-                Innlogga som {auth.user.name} ({auth.user.navIdent}).
+                Logged in as {auth.user.name} ({auth.user.navIdent}).
               </BodyShort>
               <AdminClient />
             </>
           )}
         </VStack>
-      </main>
-    </Box>
+      </div>
+    </PageBlock>
   );
 }

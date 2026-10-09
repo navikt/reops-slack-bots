@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { getSlackClient } from "../../../../lib/slack";
+import { botIsFrozen, getSlackClient } from "../../../../lib/slack";
 import { log, logError } from "../../../../lib/log";
 
 export const runtime = "nodejs";
@@ -83,9 +83,37 @@ export async function POST(req: Request): Promise<Response> {
 
   const userId = payload.user?.id ?? "unknown";
 
+  if (await botIsFrozen()) {
+    log({ event: "interactivity.frozen", by: userId });
+    if (payload.response_url) {
+      await fetch(payload.response_url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          replace_original: false,
+          text: ":pause_button: Boten er sett på pause av teamet — ingenting skjedde.",
+        }),
+      }).catch(() => undefined);
+    }
+    return new NextResponse(null, { status: 200 });
+  }
+
   try {
-    const web = getSlackClient();
-    await web.reactions.add({ channel: target.channel, timestamp: target.ts, name: "solved" });
+    const web = await getSlackClient();
+    const start = Date.now();
+    try {
+      await web.reactions.add({ channel: target.channel, timestamp: target.ts, name: "solved" });
+      log({ event: "slack.api", method: "reactions.add", duration_ms: Date.now() - start });
+    } catch (err) {
+      const e = err as { retryAfter?: number };
+      logError({
+        event: "slack.api_failed",
+        method: "reactions.add",
+        retry_after_s: e.retryAfter ?? null,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
     log({ event: "interactivity.marked_solved", channel: target.channel, ts: target.ts, by: userId });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

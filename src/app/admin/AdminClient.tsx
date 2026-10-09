@@ -6,22 +6,50 @@ import {
   BodyShort,
   Box,
   Button,
+  ExpansionCard,
   Heading,
   HStack,
   List,
   Loader,
   Select,
   Switch,
-  TextField,
   VStack,
 } from "@navikt/ds-react";
 import { TrashIcon } from "@navikt/aksel-icons";
+import { UNSAFE_Combobox as Combobox } from "@navikt/ds-react";
 
 interface IgnoreEntry {
   id: number;
-  slackId: string;
-  kind: "user" | "usergroup";
+  kind: "person";
   label: string | null;
+  navIdent: string | null;
+  email: string;
+}
+
+interface GroupEntry {
+  id: string;
+  kind: "team" | "cluster" | "productarea";
+  label: string;
+  memberCount: number | null;
+  error: string | null;
+}
+
+interface GroupOption {
+  kind: "team" | "cluster" | "productarea";
+  id: string;
+  label: string;
+}
+
+interface GroupMember {
+  navIdent: string | null;
+  email: string | null;
+  fullName: string | null;
+}
+
+interface PersonHit {
+  navIdent: string | null;
+  fullName: string | null;
+  email: string | null;
 }
 
 interface JoinedChannel {
@@ -37,14 +65,101 @@ interface LastScan {
 }
 
 interface AdminState {
-  enabled: boolean;
-  nagFrequencyDays: number;
+  frozen: boolean;
+  scanWindowDays: number;
+  minAgeHours: number;
   ignoreList: IgnoreEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
   channels: JoinedChannel[];
   channelsError: string | null;
   lastScan: LastScan | null;
+  groups: GroupEntry[];
+}
+
+function GroupRow({
+  group,
+  busy,
+  onRemove,
+}: {
+  group: GroupEntry;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  const [members, setMembers] = useState<GroupMember[] | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const loadMembers = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/admin/groups/members?kind=${group.kind}&id=${encodeURIComponent(group.id)}`,
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { members: GroupMember[] };
+        setMembers(data.members);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <ExpansionCard
+      aria-label={group.label}
+      size="small"
+      style={{ width: "100%" }}
+      onToggle={(open) => {
+        if (open && members === null) void loadMembers();
+      }}
+    >
+      <ExpansionCard.Header>
+        <HStack
+          justify="space-between"
+          align="center"
+          style={{ width: "100%" }}
+          wrap={false}
+          gap="space-16"
+        >
+          <VStack gap="space-0" style={{ minWidth: 0 }}>
+            <ExpansionCard.Title size="small">{group.label}</ExpansionCard.Title>
+            <ExpansionCard.Description>
+              {group.kind}
+              {group.memberCount !== null ? ` · ${group.memberCount} members` : ""}
+              {group.error ? ` · member count unavailable` : ""}
+            </ExpansionCard.Description>
+          </VStack>
+          <Button
+            variant="tertiary"
+            data-color="danger"
+            icon={<TrashIcon aria-hidden />}
+            title={`Remove ${group.label}`}
+            disabled={busy}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+          >
+            Remove
+          </Button>
+        </HStack>
+      </ExpansionCard.Header>
+      <ExpansionCard.Content>
+        <div style={{ maxWidth: "100%", overflowWrap: "anywhere" }}>
+          {loading && <Loader size="small" />}
+          {members && (
+            <List size="small">
+              {members.map((m) => (
+                <List.Item key={m.email ?? m.navIdent}>
+                  {m.fullName ?? m.navIdent} {m.email ? `(${m.email})` : ""}
+                </List.Item>
+              ))}
+            </List>
+          )}
+        </div>
+      </ExpansionCard.Content>
+    </ExpansionCard>
+  );
 }
 
 export function AdminClient() {
@@ -53,21 +168,24 @@ export function AdminClient() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const [newSlackId, setNewSlackId] = useState("");
-  const [newKind, setNewKind] = useState<"user" | "usergroup">("user");
-  const [newLabel, setNewLabel] = useState("");
+  const [peopleOptions, setPeopleOptions] = useState<PersonHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selectedPerson, setSelectedPerson] = useState<PersonHit | null>(null);
+  const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
+  const [groupSearching, setGroupSearching] = useState(false);
+  const [selectedGroup, setSelectedGroup] = useState<GroupOption | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/admin/state", { cache: "no-store" });
       if (!res.ok) {
-        setLoadError(`Kunne ikkje hente innstillingar (${res.status})`);
+        setLoadError(`Could not load settings (${res.status})`);
         return;
       }
       setState((await res.json()) as AdminState);
       setLoadError(null);
     } catch {
-      setLoadError("Kunne ikkje hente innstillingar");
+      setLoadError("Could not load settings");
     }
   }, []);
 
@@ -75,9 +193,18 @@ export function AdminClient() {
     void load();
   }, [load]);
 
+  // Refetch when the tab regains focus — covers "tab to Slack, /invite the
+  // bot, tab back" without a manual reload.
+  useEffect(() => {
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [load]);
+
   const saveSettings = async (patch: {
-    enabled?: boolean;
-    nagFrequencyDays?: number;
+    frozen?: boolean;
+    scanWindowDays?: number;
+    minAgeHours?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   }) => {
@@ -90,8 +217,10 @@ export function AdminClient() {
         body: JSON.stringify(patch),
       });
       if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as { error?: string } | null;
-        setActionError(data?.error ?? `Lagring feila (${res.status})`);
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setActionError(data?.error ?? `Save failed (${res.status})`);
         return;
       }
       await load();
@@ -100,22 +229,101 @@ export function AdminClient() {
     }
   };
 
-  const addIgnore = async () => {
+  const searchPeople = async (query: string) => {
+    if (query.trim().length < 3) {
+      setPeopleOptions([]);
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await fetch(`/api/admin/people?q=${encodeURIComponent(query)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { people: PersonHit[] };
+      setPeopleOptions(data.people.filter((p) => p.email));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const addPerson = async () => {
+    if (!selectedPerson?.email) return;
     setBusy(true);
     setActionError(null);
     try {
       const res = await fetch("/api/admin/ignore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slackId: newSlackId, kind: newKind, label: newLabel }),
+        body: JSON.stringify({
+          email: selectedPerson.email,
+          label: selectedPerson.fullName,
+          navIdent: selectedPerson.navIdent,
+        }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setActionError(data?.error ?? `Could not add (${res.status})`);
+        return;
+      }
+      setSelectedPerson(null);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const searchGroupsFn = async (query: string) => {
+    if (query.trim().length < 3) {
+      setGroupOptions([]);
+      return;
+    }
+    setGroupSearching(true);
+    try {
+      const res = await fetch(`/api/admin/groups?q=${encodeURIComponent(query)}`);
+      if (!res.ok) return;
+      const data = (await res.json()) as { groups: GroupOption[] };
+      setGroupOptions(data.groups);
+    } finally {
+      setGroupSearching(false);
+    }
+  };
+
+  const addGroupFn = async () => {
+    if (!selectedGroup) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selectedGroup),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
-        setActionError(data?.error ?? `Kunne ikkje leggje til (${res.status})`);
+        setActionError(data?.error ?? `Could not add group (${res.status})`);
         return;
       }
-      setNewSlackId("");
-      setNewLabel("");
+      setSelectedGroup(null);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeGroupFn = async (g: GroupEntry) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/groups", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: g.kind, id: g.id }),
+      });
+      if (!res.ok) {
+        setActionError(`Could not remove group (${res.status})`);
+        return;
+      }
       await load();
     } finally {
       setBusy(false);
@@ -132,7 +340,29 @@ export function AdminClient() {
         body: JSON.stringify({ id }),
       });
       if (!res.ok) {
-        setActionError(`Kunne ikkje fjerne (${res.status})`);
+        setActionError(`Could not remove entry (${res.status})`);
+        return;
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runTestAction = async (action: "scan" | "ping") => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setActionError(data?.error ?? `Action failed (${res.status})`);
         return;
       }
       await load();
@@ -149,7 +379,7 @@ export function AdminClient() {
     return (
       <HStack gap="space-8" align="center">
         <Loader size="small" />
-        <span>Hentar innstillingar …</span>
+        <span>Loading settings …</span>
       </HStack>
     );
   }
@@ -158,176 +388,467 @@ export function AdminClient() {
     <VStack gap="space-24" align="start">
       {actionError && <Alert variant="error">{actionError}</Alert>}
 
-      <Box asChild>
+      <Box
+        asChild
+        background="raised"
+        borderWidth="1"
+        borderColor="neutral-subtle"
+        borderRadius="12"
+        padding="space-24"
+        style={{ width: "100%" }}
+      >
         <section>
           <VStack gap="space-12" align="start">
             <Heading level="2" size="medium" spacing>
-              Status
-            </Heading>
-            {state.lastScan ? (
-              <BodyShort>
-                Siste sjekk:{" "}
-                {new Date(state.lastScan.at).toLocaleString("nb-NO", {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })}{" "}
-                — {state.lastScan.unsolved} ubesvarte funne,{" "}
-                {state.lastScan.nagged} påminningar sendte. Jobben køyrer
-                klar klokkeslett kvart heile time.
-              </BodyShort>
-            ) : (
-              <BodyShort>
-                Ingen sjekk køyrt enno — jobben startar innan ein time etter
-                oppstart.
-              </BodyShort>
-            )}
-          </VStack>
-        </section>
-      </Box>
-
-      <Box asChild>
-        <section>
-          <VStack gap="space-12" align="start">
-            <Heading level="2" size="medium" spacing>
-              Kanalar
+              Bot on/off
             </Heading>
             <BodyShort>
-              Inviter boten (@reops) til ein kanal for å få han til å visast
-              her.
+              Off = zero Slack calls (no job, no buttons). Anyone on the team
+              can flip this. No deploy needed.
             </BodyShort>
-            {state.channelsError && (
+            <Switch
+              checked={!state.frozen}
+              disabled={busy}
+              onChange={(e) => void saveSettings({ frozen: !e.target.checked })}
+            >
+              Bot is active
+            </Switch>
+            {state.frozen && (
               <Alert variant="warning">
-                Kunne ikkje hente kanalar frå Slack ({state.channelsError}).
-                Er SLACK_BOT_TOKEN sett?
+                Bot is off. No Slack activity until turned on.
               </Alert>
             )}
-            <HStack gap="space-16" align="start" wrap>
-              <Select
-                label="Kanal som overvakast"
-                description="Meldingar her sjekkast for svar"
-                value={state.sourceChannelId ?? ""}
-                disabled={busy}
-                onChange={(e) =>
-                  void saveSettings({ sourceChannelId: e.target.value || null })
-                }
-                style={{ width: "18rem" }}
-              >
-                <option value="">Ikkje valt</option>
-                {state.channels.map((ch) => (
-                  <option key={ch.id} value={ch.id}>
-                    {ch.isPrivate ? "🔒 " : "#"}
-                    {ch.name}
-                  </option>
-                ))}
-              </Select>
-              <Select
-                label="Kanal for påminningar"
-                description="Påminningar om ubesvarte meldingar postast her"
-                value={state.targetChannelId ?? ""}
-                disabled={busy}
-                onChange={(e) =>
-                  void saveSettings({ targetChannelId: e.target.value || null })
-                }
-                style={{ width: "18rem" }}
-              >
-                <option value="">Ikkje valt</option>
-                {state.channels.map((ch) => (
-                  <option key={ch.id} value={ch.id}>
-                    {ch.isPrivate ? "🔒 " : "#"}
-                    {ch.name}
-                  </option>
-                ))}
-              </Select>
-            </HStack>
           </VStack>
         </section>
       </Box>
 
-      <Box asChild>
+      <Box
+        asChild
+        background="sunken"
+        borderWidth="1"
+        borderColor="neutral-subtle"
+        borderRadius="12"
+        padding="space-24"
+        style={{ width: "100%" }}
+      >
         <section>
-          <VStack gap="space-12" align="start">
-            <Heading level="2" size="medium" spacing>
-              Innstillingar
-            </Heading>
-            <Switch
-              checked={state.enabled}
-              disabled={busy}
-              onChange={(e) => void saveSettings({ enabled: e.target.checked })}
-            >
-              Boten er slått på
-            </Switch>
-            <Select
-              label="Påminnelse for meldingar eldre enn"
-              value={String(state.nagFrequencyDays)}
-              disabled={busy}
-              onChange={(e) => void saveSettings({ nagFrequencyDays: Number(e.target.value) })}
-              style={{ width: "16rem" }}
-            >
-              {[1, 2, 3, 5, 7, 10, 14, 21, 30].map((d) => (
-                <option key={d} value={d}>
-                  {d} {d === 1 ? "dag" : "dagar"}
-                </option>
-              ))}
-            </Select>
-          </VStack>
-        </section>
-      </Box>
+          <VStack gap="space-20" align="start">
+            <VStack gap="space-4" align="start">
+              <Heading level="2" size="medium">
+                Unanswered messages
+              </Heading>
+              <BodyShort>
+                Hourly scan for messages without :solved:. Posts a reminder with
+                a "Mark as solved" button.
+              </BodyShort>
+            </VStack>
 
-      <Box asChild>
-        <section>
-          <VStack gap="space-12" align="start">
-            <Heading level="2" size="medium" spacing>
-              Ignorarliste
-            </Heading>
-            <List>
-              {state.ignoreList.map((entry) => (
-                <List.Item
-                  key={entry.id}
-                  icon={
-                    <Button
-                      variant="tertiary"
-                      size="small"
-                      icon={<TrashIcon aria-hidden />}
-                      title={`Fjern ${entry.slackId}`}
+            <Box
+              asChild
+              background="raised"
+              borderWidth="1"
+              borderColor="neutral-subtle"
+              borderRadius="12"
+              padding="space-24"
+              style={{ width: "100%" }}
+            >
+              <section>
+                <VStack gap="space-12" align="start">
+                  <Heading level="3" size="small" spacing>
+                    Status
+                  </Heading>
+                  {state.lastScan ? (
+                    <BodyShort>
+                      Last check:{" "}
+                      {new Date(state.lastScan.at).toLocaleString("en-GB", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                      . Found {state.lastScan.unsolved} unanswered, sent{" "}
+                      {state.lastScan.nagged} reminders. Runs hourly.
+                    </BodyShort>
+                  ) : (
+                    <BodyShort>
+                      No check yet. First run starts within an hour of boot.
+                    </BodyShort>
+                  )}
+                </VStack>
+              </section>
+            </Box>
+
+            <Box
+              asChild
+              background="raised"
+              borderWidth="1"
+              borderColor="neutral-subtle"
+              borderRadius="12"
+              padding="space-24"
+              style={{ width: "100%" }}
+            >
+              <section>
+                <VStack gap="space-12" align="start">
+                  <Heading level="3" size="small" spacing>
+                    Channels
+                  </Heading>
+                  <BodyShort>
+                    Invite @reops to a channel to list it here.
+                  </BodyShort>
+                  {state.channelsError && (
+                    <Alert variant="warning">
+                      Could not fetch channels ({state.channelsError}). Is
+                      SLACK_BOT_TOKEN set?
+                    </Alert>
+                  )}
+                  <HStack gap="space-16" align="start" wrap>
+                    <Select
+                      label="Channel to monitor"
+                      description="Checked for answers"
+                      value={state.sourceChannelId ?? ""}
                       disabled={busy}
-                      onClick={() => void removeIgnore(entry.id)}
-                    />
-                  }
-                >
-                  {entry.label ? `${entry.label} — ` : ""}
-                  {entry.slackId} ({entry.kind === "user" ? "brukar" : "brukargruppe"})
-                </List.Item>
-              ))}
-            </List>
+                      onChange={(e) =>
+                        void saveSettings({
+                          sourceChannelId: e.target.value || null,
+                        })
+                      }
+                      style={{ width: "18rem" }}
+                    >
+                      <option value="">Not selected</option>
+                      {state.channels.map((ch) => (
+                        <option key={ch.id} value={ch.id}>
+                          {ch.isPrivate ? "🔒 " : "#"}
+                          {ch.name}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Channel for reminders"
+                      description="Reminders are posted here"
+                      value={state.targetChannelId ?? ""}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          targetChannelId: e.target.value || null,
+                        })
+                      }
+                      style={{ width: "18rem" }}
+                    >
+                      <option value="">Not selected</option>
+                      {state.channels.map((ch) => (
+                        <option key={ch.id} value={ch.id}>
+                          {ch.isPrivate ? "🔒 " : "#"}
+                          {ch.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </HStack>
+                </VStack>
+              </section>
+            </Box>
 
-            <HStack gap="space-8" align="end" wrap>
-              <TextField
-                label="Slack-ID"
-                description="Brukar: U…, brukargruppe: S…"
-                value={newSlackId}
-                onChange={(e) => setNewSlackId(e.target.value)}
-              />
-              <Select
-                label="Type"
-                value={newKind}
-                onChange={(e) => setNewKind(e.target.value as "user" | "usergroup")}
-              >
-                <option value="user">Brukar</option>
-                <option value="usergroup">Brukargruppe</option>
-              </Select>
-              <TextField
-                label="Namn (valfritt)"
-                value={newLabel}
-                onChange={(e) => setNewLabel(e.target.value)}
-              />
-              <Button
-                variant="secondary"
-                disabled={busy || !newSlackId.trim()}
-                onClick={() => void addIgnore()}
-              >
-                Legg til
-              </Button>
-            </HStack>
+            <Box
+              asChild
+              background="raised"
+              borderWidth="1"
+              borderColor="neutral-subtle"
+              borderRadius="12"
+              padding="space-24"
+              style={{ width: "100%" }}
+            >
+              <section>
+                <VStack gap="space-16" align="start">
+                  <Heading level="3" size="small" spacing>
+                    Settings
+                  </Heading>
+                  <HStack gap="space-16" align="start" wrap>
+                    <Select
+                      label="Scan window"
+                      description="Ignore messages older than this. Also the cooldown before re-reminding."
+                      value={String(state.scanWindowDays)}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          scanWindowDays: Number(e.target.value),
+                        })
+                      }
+                      style={{ width: "14rem" }}
+                    >
+                      {[1, 2, 3, 5, 7, 10, 14, 21, 30].map((d) => (
+                        <option key={d} value={d}>
+                          {d} {d === 1 ? "day" : "days"}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Grace period"
+                      description="Wait this long before a message counts as unanswered."
+                      value={String(state.minAgeHours)}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          minAgeHours: Number(e.target.value),
+                        })
+                      }
+                      style={{ width: "14rem" }}
+                    >
+                      {[0, 1, 2, 4, 8, 24].map((h) => (
+                        <option key={h} value={h}>
+                          {h === 0 ? "None" : `${h} ${h === 1 ? "hour" : "hours"}`}
+                        </option>
+                      ))}
+                    </Select>
+                  </HStack>
+                </VStack>
+              </section>
+            </Box>
+
+            <Box
+              asChild
+              background="raised"
+              borderWidth="1"
+              borderColor="neutral-subtle"
+              borderRadius="12"
+              padding="space-24"
+              style={{ width: "100%" }}
+            >
+              <section>
+                <VStack gap="space-24" align="start" style={{ width: "100%" }}>
+                  <VStack gap="space-4" align="start">
+                    <Heading level="3" size="small">
+                      Who gets ignored
+                    </Heading>
+                    <BodyShort textColor="subtle">
+                      Messages from these people never trigger reminders. A
+                      thread counts as handled when one of them wrote the last
+                      reply.
+                    </BodyShort>
+                  </VStack>
+
+                  <Box
+                    background="sunken"
+                    borderRadius="8"
+                    padding="space-16"
+                    style={{ width: "100%" }}
+                    asChild
+                  >
+                    <section aria-label="Groups">
+                      <VStack gap="space-12" align="start">
+                        <Heading level="4" size="xsmall">
+                          Groups
+                        </Heading>
+                        {state.groups.length === 0 && (
+                          <BodyShort textColor="subtle">
+                            No groups yet. Add the team to cover everyone at
+                            once.
+                          </BodyShort>
+                        )}
+                        {state.groups.map((g) => (
+                          <GroupRow
+                            key={`${g.kind}:${g.id}`}
+                            group={g}
+                            busy={busy}
+                            onRemove={() => void removeGroupFn(g)}
+                          />
+                        ))}
+                        <HStack gap="space-8" align="end" wrap>
+                          <div style={{ width: "24rem", maxWidth: "100%" }}>
+                            <Combobox
+                              label="Add group"
+                              description="Team, cluster or seksjon from Team Catalog. Min 3 chars."
+                              options={groupOptions.map((g) => ({
+                                label: `${g.label} (${g.kind})`,
+                                value: `${g.kind}:${g.id}`,
+                              }))}
+                              filteredOptions={groupOptions.map((g) => ({
+                                label: `${g.label} (${g.kind})`,
+                                value: `${g.kind}:${g.id}`,
+                              }))}
+                              isLoading={groupSearching}
+                              shouldAutocomplete={false}
+                              onChange={(v) => {
+                                const q =
+                                  v && typeof v === "object" && "target" in v
+                                    ? (v as React.ChangeEvent<HTMLInputElement>).target.value
+                                    : String(v ?? "");
+                                void searchGroupsFn(q);
+                              }}
+                              onToggleSelected={(value, selected) => {
+                                if (selected) {
+                                  setSelectedGroup(
+                                    groupOptions.find((g) => `${g.kind}:${g.id}` === value) ?? null,
+                                  );
+                                } else {
+                                  setSelectedGroup(null);
+                                }
+                              }}
+                              selectedOptions={
+                                selectedGroup
+                                  ? [
+                                      {
+                                        label: `${selectedGroup.label} (${selectedGroup.kind})`,
+                                        value: `${selectedGroup.kind}:${selectedGroup.id}`,
+                                      },
+                                    ]
+                                  : []
+                              }
+                            />
+                          </div>
+                          <Button
+                            variant="secondary"
+                            disabled={busy || !selectedGroup}
+                            onClick={() => void addGroupFn()}
+                          >
+                            Add group
+                          </Button>
+                        </HStack>
+                      </VStack>
+                    </section>
+                  </Box>
+
+                  <Box
+                    background="sunken"
+                    borderRadius="8"
+                    padding="space-16"
+                    style={{ width: "100%" }}
+                    asChild
+                  >
+                    <section aria-label="Individuals">
+                      <VStack gap="space-12" align="start">
+                        <Heading level="4" size="xsmall">
+                          Individuals
+                        </Heading>
+                        {state.ignoreList.length === 0 && (
+                          <BodyShort textColor="subtle">
+                            Usually not needed when the team group covers it.
+                          </BodyShort>
+                        )}
+                        {state.ignoreList.map((entry) => (
+                          <HStack
+                            key={entry.id}
+                            gap="space-16"
+                            align="center"
+                            justify="space-between"
+                            wrap={false}
+                            style={{ width: "100%" }}
+                          >
+                            <BodyShort style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                              {entry.label ? `${entry.label} ` : ""}({entry.email})
+                            </BodyShort>
+                            <Button
+                              variant="tertiary"
+                              data-color="danger"
+                              icon={<TrashIcon aria-hidden />}
+                              title={`Remove ${entry.email}`}
+                              disabled={busy}
+                              onClick={() => void removeIgnore(entry.id)}
+                            >
+                              Remove
+                            </Button>
+                          </HStack>
+                        ))}
+                        <HStack gap="space-8" align="end" wrap>
+                          <div style={{ width: "24rem", maxWidth: "100%" }}>
+                            <Combobox
+                              label="Add person"
+                              description="Search by name. Matched to Slack via email."
+                              options={peopleOptions.map((p) => ({
+                                label: `${p.fullName ?? p.navIdent} (${p.email})`,
+                                value: p.email ?? "",
+                              }))}
+                              filteredOptions={peopleOptions.map((p) => ({
+                                label: `${p.fullName ?? p.navIdent} (${p.email})`,
+                                value: p.email ?? "",
+                              }))}
+                              isLoading={searching}
+                              shouldAutocomplete={false}
+                              onChange={(e) => {
+                                const v =
+                                  e && typeof e === "object" && "target" in e
+                                    ? (e as React.ChangeEvent<HTMLInputElement>).target.value
+                                    : String(e ?? "");
+                                void searchPeople(v);
+                              }}
+                              onToggleSelected={(value, selected) => {
+                                if (selected) {
+                                  setSelectedPerson(
+                                    peopleOptions.find((p) => p.email === value) ?? null,
+                                  );
+                                } else {
+                                  setSelectedPerson(null);
+                                }
+                              }}
+                              selectedOptions={
+                                selectedPerson
+                                  ? [
+                                      {
+                                        label: `${selectedPerson.fullName ?? selectedPerson.navIdent} (${selectedPerson.email})`,
+                                        value: selectedPerson.email ?? "",
+                                      },
+                                    ]
+                                  : []
+                              }
+                            />
+                          </div>
+                          <Button
+                            variant="secondary"
+                            disabled={busy || !selectedPerson}
+                            onClick={() => void addPerson()}
+                          >
+                            Add person
+                          </Button>
+                        </HStack>
+                      </VStack>
+                    </section>
+                  </Box>
+                </VStack>
+              </section>
+            </Box>
+            <Box
+              asChild
+              background="raised"
+              borderWidth="1"
+              borderColor="neutral-subtle"
+              borderRadius="12"
+              padding="space-24"
+              style={{ width: "100%" }}
+            >
+              <ExpansionCard aria-label="Test tools" size="small">
+                <ExpansionCard.Header>
+                  <ExpansionCard.Title>Test tools</ExpansionCard.Title>
+                  <ExpansionCard.Description>
+                    Manual triggers. Rarely needed.
+                  </ExpansionCard.Description>
+                </ExpansionCard.Header>
+                <ExpansionCard.Content>
+                  <VStack gap="space-12" align="start">
+                    <HStack gap="space-8" wrap>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        disabled={busy || state.frozen}
+                        onClick={() => void runTestAction("scan")}
+                      >
+                        Run scan now
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        disabled={
+                          busy || state.frozen || !state.targetChannelId
+                        }
+                        onClick={() => void runTestAction("ping")}
+                      >
+                        Post test reminder
+                      </Button>
+                    </HStack>
+                    <BodyShort>
+                      "Run scan now" does a real hourly scan immediately. "Post
+                      test reminder" sends a clearly marked fake reminder to the
+                      reminder channel to verify wiring.
+                    </BodyShort>
+                  </VStack>
+                </ExpansionCard.Content>
+              </ExpansionCard>
+            </Box>
           </VStack>
         </section>
       </Box>

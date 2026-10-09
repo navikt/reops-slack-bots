@@ -94,28 +94,29 @@ export async function setSetting(key: string, value: string): Promise<void> {
 
 export interface IgnoreListRow {
   id: number;
-  slack_id: string;
-  kind: "user" | "usergroup";
+  kind: "person";
   label: string | null;
+  nav_ident: string | null;
+  email: string;
   created_at: Date;
 }
 
 export async function listIgnoreEntries(): Promise<IgnoreListRow[]> {
   const res = await query<IgnoreListRow>(
-    "SELECT id, slack_id, kind, label, created_at FROM ignore_list ORDER BY created_at ASC",
+    "SELECT id, kind, label, nav_ident, email, created_at FROM ignore_list ORDER BY created_at ASC",
   );
   return res.rows;
 }
 
 export async function addIgnoreEntry(
-  slackId: string,
-  kind: "user" | "usergroup",
+  email: string,
   label: string | null,
+  navIdent: string | null,
 ): Promise<IgnoreListRow> {
   const res = await query<IgnoreListRow>(
-    `INSERT INTO ignore_list (slack_id, kind, label) VALUES ($1, $2, $3)
-     RETURNING id, slack_id, kind, label, created_at`,
-    [slackId, kind, label],
+    `INSERT INTO ignore_list (kind, label, nav_ident, email) VALUES ('person', $1, $2, $3)
+     RETURNING id, kind, label, nav_ident, email, created_at`,
+    [label, navIdent, email],
   );
   return res.rows[0];
 }
@@ -125,12 +126,34 @@ export async function removeIgnoreEntry(id: number): Promise<boolean> {
   return (res.rowCount ?? 0) > 0;
 }
 
-export async function seedResearchopsUsergroup(usergroupId: string): Promise<void> {
+export async function listIgnoreEmails(): Promise<string[]> {
+  const res = await query<{ email: string }>("SELECT email FROM ignore_list WHERE kind = 'person'");
+  return res.rows.map((r) => r.email);
+}
+
+// ── Groups (Team Catalog) ─────────────────────────────────────────────────────
+
+export interface GroupRow {
+  id: string;
+  kind: "team" | "cluster" | "productarea";
+  label: string;
+}
+
+export async function listGroups(): Promise<GroupRow[]> {
+  const res = await query<GroupRow>("SELECT id, kind, label FROM groups ORDER BY label ASC");
+  return res.rows;
+}
+
+export async function addGroup(id: string, kind: GroupRow["kind"], label: string): Promise<void> {
   await query(
-    `INSERT INTO ignore_list (slack_id, kind, label) VALUES ($1, 'usergroup', 'Team ResearchOps')
-     ON CONFLICT (slack_id) DO NOTHING`,
-    [usergroupId],
+    "INSERT INTO groups (id, kind, label) VALUES ($1, $2, $3) ON CONFLICT (id, kind) DO NOTHING",
+    [id, kind, label],
   );
+}
+
+export async function removeGroup(id: string, kind: string): Promise<boolean> {
+  const res = await query("DELETE FROM groups WHERE id = $1 AND kind = $2", [id, kind]);
+  return (res.rowCount ?? 0) > 0;
 }
 
 export async function getRecentlyNaggedTs(

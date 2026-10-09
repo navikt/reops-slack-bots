@@ -22,7 +22,7 @@
         "reactions:read",
         "reactions:write",
         "chat:write",
-        "usergroups:read"
+        "users:read.email"
       ]
     }
   },

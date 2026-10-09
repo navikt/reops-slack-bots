@@ -4,16 +4,27 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT INTO settings (key, value) VALUES
-  ('nag_frequency_days', '14'),
-  ('enabled', 'true')
+  ('scan_window_days', '14'),
+  ('min_age_hours', '1'),
+  ('frozen', 'true')  -- bot starts OFF; team configures channels first
 ON CONFLICT (key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS ignore_list (
   id SERIAL PRIMARY KEY,
-  slack_id TEXT NOT NULL UNIQUE, -- user ID (U...) or usergroup ID (S...)
-  kind TEXT NOT NULL CHECK (kind IN ('user', 'usergroup')),
-  label TEXT, -- human-readable name for display in admin UI
+  kind TEXT NOT NULL CHECK (kind IN ('person')),
+  label TEXT, -- display name
+  nav_ident TEXT, -- Team Catalog identity
+  email TEXT NOT NULL, -- resolved to a Slack user via users.lookupByEmail
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Team Catalog groups (team / cluster / productarea) whose members count as
+-- team. Members are resolved live each scan: group -> member emails -> Slack.
+CREATE TABLE IF NOT EXISTS groups (
+  id TEXT NOT NULL, -- Team Catalog UUID
+  kind TEXT NOT NULL CHECK (kind IN ('team', 'cluster', 'productarea')),
+  label TEXT NOT NULL,
+  PRIMARY KEY (id, kind)
 );
 
 CREATE TABLE IF NOT EXISTS nag_log (

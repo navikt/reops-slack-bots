@@ -13,8 +13,9 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   let body: {
-    enabled?: boolean;
-    nagFrequencyDays?: number;
+    frozen?: boolean;
+    scanWindowDays?: number;
+    minAgeHours?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   };
@@ -24,21 +25,27 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "Malformed JSON" }, { status: 400 });
   }
 
-  if (typeof body.enabled === "boolean") {
-    await setSetting("enabled", body.enabled ? "true" : "false");
-    log({ event: "admin.settings_changed", key: "enabled", value: String(body.enabled), by: auth.user.navIdent });
+  if (typeof body.frozen === "boolean") {
+    await setSetting("frozen", body.frozen ? "true" : "false");
+    log({ event: "admin.settings_changed", key: "frozen", value: String(body.frozen), by: auth.user.navIdent });
   }
 
-  if (body.nagFrequencyDays !== undefined) {
-    const days = Math.trunc(body.nagFrequencyDays);
+  if (body.scanWindowDays !== undefined) {
+    const days = Math.trunc(body.scanWindowDays);
     if (!Number.isFinite(days) || days < 1 || days > 90) {
-      return NextResponse.json(
-        { error: "nagFrequencyDays må være et heltall mellom 1 og 90" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "scanWindowDays must be 1-90" }, { status: 400 });
     }
-    await setSetting("nag_frequency_days", String(days));
-    log({ event: "admin.settings_changed", key: "nag_frequency_days", value: String(days), by: auth.user.navIdent });
+    await setSetting("scan_window_days", String(days));
+    log({ event: "admin.settings_changed", key: "scan_window_days", value: String(days), by: auth.user.navIdent });
+  }
+
+  if (body.minAgeHours !== undefined) {
+    const hours = Math.trunc(body.minAgeHours);
+    if (!Number.isFinite(hours) || hours < 0 || hours > 168) {
+      return NextResponse.json({ error: "minAgeHours must be 0-168" }, { status: 400 });
+    }
+    await setSetting("min_age_hours", String(hours));
+    log({ event: "admin.settings_changed", key: "min_age_hours", value: String(hours), by: auth.user.navIdent });
   }
 
   // Channel pickers: null/empty string clears the setting (job skips until set).

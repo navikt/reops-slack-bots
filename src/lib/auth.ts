@@ -24,6 +24,91 @@ export interface TeamCatalogTeam {
   name: string;
 }
 
+export interface TeamCatalogMember {
+  navIdent: string | null;
+  email: string | null;
+  fullName: string | null;
+}
+
+export type GroupKind = "team" | "cluster" | "productarea";
+
+export interface GroupOption {
+  kind: GroupKind;
+  id: string;
+  label: string;
+}
+
+interface TkPage<T> {
+  content?: T[];
+}
+
+function tkContent<T>(page: TkPage<T> | T[]): T[] {
+  return Array.isArray(page) ? page : (page.content ?? []);
+}
+
+/**
+ * Fetches members of a team from Team Catalog. Used to auto-derive the
+ * Slack ignore list via email lookup — team membership changes propagate
+ * without anyone editing the ignore list by hand.
+ */
+export async function getTeamMembers(teamId: string): Promise<TeamCatalogMember[]> {
+  const res = await fetch(`${TEAMKATALOG_BASE_URL}/team/${encodeURIComponent(teamId)}`);
+  if (!res.ok) {
+    throw new Error(`Team Catalog API returned ${res.status} for team ${teamId}`);
+  }
+  const data = (await res.json()) as {
+    members?: Array<{ resource?: { navIdent?: string; email?: string; fullName?: string } }>;
+  };
+  return (data.members ?? []).map((m) => ({
+    navIdent: m.resource?.navIdent ?? null,
+    email: m.resource?.email ?? null,
+    fullName: m.resource?.fullName ?? null,
+  }));
+}
+
+/** Searches active teams, clusters and product areas by name. */
+export async function searchGroups(query: string): Promise<GroupOption[]> {
+  const enc = encodeURIComponent(query);
+  const fetcher = async (kind: GroupKind, path: string): Promise<GroupOption[]> => {
+    const res = await fetch(`${TEAMKATALOG_BASE_URL}${path}${enc}?status=ACTIVE`);
+    if (!res.ok) throw new Error(`Team Catalog ${path}: ${res.status}`);
+    const page = (await res.json()) as TkPage<{ id: string; name: string }>;
+    return tkContent(page).map((g) => ({ kind, id: g.id, label: g.name }));
+  };
+
+  const [teams, clusters, areas] = await Promise.allSettled([
+    fetcher("team", "/team/search/"),
+    fetcher("cluster", "/cluster/search/"),
+    fetcher("productarea", "/productarea/search/"),
+  ]);
+
+  const out: GroupOption[] = [];
+  if (teams.status === "fulfilled") out.push(...teams.value.slice(0, 8));
+  if (clusters.status === "fulfilled") out.push(...clusters.value.slice(0, 5));
+  if (areas.status === "fulfilled") out.push(...areas.value.slice(0, 5));
+  return out;
+}
+
+/** Members of a cluster/productarea = own members + members of child teams. */
+async function getChildTeams(kind: "cluster" | "productarea", id: string): Promise<string[]> {
+  const param = kind === "cluster" ? "clusterId" : "productAreaId";
+  const res = await fetch(`${TEAMKATALOG_BASE_URL}/team?${param}=${encodeURIComponent(id)}&status=ACTIVE&size=500`);
+  if (!res.ok) throw new Error(`Team Catalog child teams: ${res.status}`);
+  const page = (await res.json()) as TkPage<{ id: string }>;
+  return tkContent(page).map((t) => t.id);
+}
+
+/** Emails of everyone in a group, recursing into child teams. */
+export async function getGroupMemberEmails(kind: GroupKind, id: string): Promise<string[]> {
+  const teamIds = kind === "team" ? [id] : await getChildTeams(kind, id);
+  const memberLists = await Promise.all(teamIds.map(getTeamMembers));
+  const emails = memberLists
+    .flat()
+    .map((m) => m.email)
+    .filter((e): e is string => Boolean(e));
+  return [...new Set(emails)];
+}
+
 export interface AuthUser {
   navIdent: string;
   name: string;
@@ -100,6 +185,15 @@ export async function getTeamMembership(navIdent: string): Promise<TeamCatalogTe
  */
 export async function requireReopsTeamMember(req: Request): Promise<TeamCheckResult> {
   try {
+    // Local-dev escape hatch: skips Azure token + Team Catalog entirely.
+    // Hard-gated on NODE_ENV so it can never fire in the deployed app.
+    if (process.env.NODE_ENV !== "production" && process.env.ADMIN_DEV_BYPASS === "true") {
+      return {
+        status: "ok",
+        user: { navIdent: "DEV", name: "Lokal utvikler", email: undefined },
+      };
+    }
+
     const token = getToken(req);
     if (!token) {
       return { status: "unauthenticated" };

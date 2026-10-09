@@ -1,0 +1,18 @@
+# Local dev database. Usage: docker compose up -d
+# .env.local: DATABASE_URL=postgres://postgres:dev@localhost:5432/slackbots
+services:
+  db:
+    image: postgres:18
+    container_name: reops-slack-bots-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: slackbots
+    volumes:
+      # pg 18+ wants the mount at /var/lib/postgresql (data lands in a
+      # versioned subdir); mounting .../data directly fails on startup.
+      - pgdata:/var/lib/postgresql
+
+volumes:
+  pgdata:

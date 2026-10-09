@@ -1,4 +1,4 @@
-import { runMigrations, seedResearchopsUsergroup } from "./src/lib/db";
+import { runMigrations } from "./src/lib/db";
 import { log, logError } from "./src/lib/log";
 import { startJob, type BotJob } from "./src/lib/runner";
 
@@ -14,18 +14,11 @@ export async function startServer(): Promise<void> {
 
   await runMigrations();
 
-  const usergroupId = process.env.SLACK_RESEARCHOPS_USERGROUP_ID;
-  if (usergroupId) {
-    await seedResearchopsUsergroup(usergroupId);
-  } else {
-    log({ event: "server.no_usergroup_seed", message: "SLACK_RESEARCHOPS_USERGROUP_ID not set" });
-  }
-
   const jobs: BotJob[] = [
     {
       name: "unanswered-reminder",
       // Wake up hourly; the job itself applies a 1-hour grace period to new
-      // messages and checks nag_frequency_days before re-nagging.
+      // messages and checks scan_window_days before re-nagging.
       intervalMs: 60 * 60 * 1000,
       run: async () => {
         const { runUnansweredReminder } = await import("./src/bots/unanswered-reminder/run");

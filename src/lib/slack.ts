@@ -1,15 +1,89 @@
 import { WebClient } from "@slack/web-api";
-import type { Pool } from "pg";
-import { log, logError } from "./log";
+import { log, logDebug, logError } from "./log";
+import { getSetting } from "./db";
 
 let client: WebClient | null = null;
 
-export function getSlackClient(): WebClient {
+function getSlackClientRaw(): WebClient {
   if (client) return client;
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token) throw new Error("SLACK_BOT_TOKEN is not set");
-  client = new WebClient(token);
+  client = new WebClient(token, {
+    // Silence the SDK's console spam — we log calls ourselves via slackCall.
+    logger: {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      setLevel: () => undefined,
+      setName: () => undefined,
+      getLevel: () => 0 as never,
+    },
+  });
   return client;
+}
+
+/**
+ * Logs each outbound Slack call — Slack rate limits are per method per
+ * workspace, so a 429 is only actionable if our logs name the method.
+ * Rate-limit errors carry the Retry-After value; surface it.
+ */
+async function slackCall<T>(method: string, fn: (web: WebClient) => Promise<T>): Promise<T> {
+  const web = await getSlackClient();
+  const start = Date.now();
+  try {
+    const res = await fn(web);
+    log({ event: "slack.api", method, duration_ms: Date.now() - start });
+    return res;
+  } catch (err) {
+    // WebAPIRateLimitedError exposes .retryAfter (seconds, parsed from the
+    // Retry-After header); generic errors may carry raw headers instead.
+    const e = err as { retryAfter?: number; headers?: Record<string, string> };
+    const retryAfter = e.retryAfter ?? e.headers?.["retry-after"] ?? null;
+    logError({
+      event: "slack.api_failed",
+      method,
+      duration_ms: Date.now() - start,
+      retry_after_s: retryAfter,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+/**
+ * Kill switch: when the `frozen` setting is "true", every outbound Slack
+ * call short-circuits. Lets anyone on the team freeze the bot from /admin
+ * without touching infra. The DB read is cached briefly so a frozen bot
+ * doesn't hammer Postgres either.
+ */
+const FROZEN_CHECK_TTL_MS = 10 * 1000;
+let frozenCache: { at: number; frozen: boolean } | null = null;
+
+async function isFrozen(): Promise<boolean> {
+  if (frozenCache && Date.now() - frozenCache.at < FROZEN_CHECK_TTL_MS) {
+    return frozenCache.frozen;
+  }
+  const frozen = (await getSetting("frozen")) === "true";
+  frozenCache = { at: Date.now(), frozen };
+  return frozen;
+}
+
+export class SlackFrozenError extends Error {
+  constructor() {
+    super("Bot is frozen via admin kill switch");
+    this.name = "SlackFrozenError";
+  }
+}
+
+export async function getSlackClient(): Promise<WebClient> {
+  if (await isFrozen()) throw new SlackFrozenError();
+  return getSlackClientRaw();
+}
+
+/** Lets interactivity verify state without unfreezing reads. */
+export async function botIsFrozen(): Promise<boolean> {
+  return isFrozen();
 }
 
 export interface JoinedChannel {
@@ -18,33 +92,57 @@ export interface JoinedChannel {
   isPrivate: boolean;
 }
 
+// users.conversations lists only channels the BOT is a member of (Tier 3,
+// 50+/min) — unlike conversations.list, which pages the entire workspace.
+// The roster only changes when someone /invites the bot, so cache it
+// in-process instead of calling Slack on every page render.
+const CHANNELS_CACHE_TTL_MS = 60 * 1000;
+let channelsCache: { at: number; channels: JoinedChannel[] } | null = null;
+
 /**
  * Lists channels the bot is a member of (public + private). Powers the
  * channel pickers in /admin — "invite the bot to a channel to have it
- * appear here".
+ * appear here". Cached for 60s; invite -> visible within a minute.
  */
 export async function listJoinedChannels(): Promise<JoinedChannel[]> {
-  const web = getSlackClient();
+  if (channelsCache && Date.now() - channelsCache.at < CHANNELS_CACHE_TTL_MS) {
+    return channelsCache.channels;
+  }
+
   const channels: JoinedChannel[] = [];
   let cursor: string | undefined;
 
   do {
-    const res = await web.conversations.list({
-      types: "public_channel,private_channel",
-      exclude_archived: true,
-      limit: 200,
-      cursor,
-    });
+    const res = await slackCall("users.conversations", (web) =>
+      web.users.conversations({
+        types: "public_channel,private_channel",
+        exclude_archived: true,
+        limit: 200,
+        cursor,
+      }),
+    );
 
     for (const ch of res.channels ?? []) {
-      if (!ch.id || !ch.name || !ch.is_member) continue;
+      if (!ch.id || !ch.name) continue;
       channels.push({ id: ch.id, name: ch.name, isPrivate: ch.is_private === true });
     }
 
     cursor = res.response_metadata?.next_cursor || undefined;
   } while (cursor);
 
-  return channels.sort((a, b) => a.name.localeCompare(b.name));
+  channels.sort((a, b) => a.name.localeCompare(b.name));
+  channelsCache = { at: Date.now(), channels };
+  return channels;
+}
+
+/**
+ * Slack permalinks are deterministic, documented URL math — skip the
+ * chat.getPermalink API call entirely:
+ *   https://{workspace}.slack.com/archives/{channel}/p{ts without the dot}
+ */
+function buildPermalink(channelId: string, ts: string): string {
+  const workspace = process.env.SLACK_WORKSPACE_SUBDOMAIN ?? "nav";
+  return `https://${workspace}.slack.com/archives/${channelId}/p${ts.replace(".", "")}`;
 }
 
 export interface UnsolvedMessage {
@@ -53,6 +151,8 @@ export interface UnsolvedMessage {
   text: string;
   permalink: string;
   replyCount: number;
+  /** User IDs of the newest replies (up to 3), most recent last. */
+  latestReplyUsers: string[];
 }
 
 /**
@@ -69,7 +169,6 @@ export async function fetchOldUnsolvedMessages(
   olderThanDays: number,
   youngerThanHours: number,
 ): Promise<UnsolvedMessage[]> {
-  const web = getSlackClient();
   const nowS = Date.now() / 1000;
   const oldest = (nowS - olderThanDays * 24 * 60 * 60).toFixed(6);
   const latest = (nowS - youngerThanHours * 60 * 60).toFixed(6);
@@ -78,13 +177,9 @@ export async function fetchOldUnsolvedMessages(
   let cursor: string | undefined;
 
   do {
-    const res = await web.conversations.history({
-      channel: channelId,
-      oldest,
-      latest,
-      limit: 200,
-      cursor,
-    });
+    const res = await slackCall("conversations.history", (web) =>
+      web.conversations.history({ channel: channelId, oldest, latest, limit: 200, cursor }),
+    );
 
     for (const msg of res.messages ?? []) {
       // Only consider top-level user messages (skip replies, bot posts, join/leave notices)
@@ -94,24 +189,20 @@ export async function fetchOldUnsolvedMessages(
       const solved = (msg.reactions ?? []).some((r) => r.name === "solved");
       if (solved) continue;
 
-      let permalink = "";
-      try {
-        const pl = await web.chat.getPermalink({ channel: channelId, message_ts: msg.ts });
-        permalink = pl.permalink ?? "";
-      } catch (err) {
-        logError({
-          event: "slack.permalink_failed",
-          ts: msg.ts,
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-
       unsolved.push({
         ts: msg.ts,
         user: msg.user,
         text: msg.text ?? "",
-        permalink,
+        permalink: buildPermalink(channelId, msg.ts),
         replyCount: msg.reply_count ?? 0,
+        // history embeds the 3 newest replies inline — enough to read the
+        // last reply author without a conversations.replies call. The SDK
+        // type omits latest_replies; it exists on the wire.
+        latestReplyUsers: (
+          (msg as { latest_replies?: Array<{ user?: string }> }).latest_replies ?? []
+        )
+          .map((r) => r.user)
+          .filter((u): u is string => Boolean(u)),
       });
     }
 
@@ -135,10 +226,11 @@ export async function isThreadHandled(
   threadTs: string,
   ignoreSet: ReadonlySet<string>,
 ): Promise<boolean> {
-  const web = getSlackClient();
 
   try {
-    const res = await web.conversations.replies({ channel: channelId, ts: threadTs });
+    const res = await slackCall("conversations.replies", (web) =>
+      web.conversations.replies({ channel: channelId, ts: threadTs }),
+    );
     const messages = res.messages ?? [];
     if (messages.length === 0) return false;
 
@@ -160,39 +252,55 @@ export async function isThreadHandled(
 }
 
 /**
- * Reads the ignore_list table and expands any usergroup rows into member
- * user IDs via usergroups.users.list. Returns all ignored user IDs.
+ * Resolves team emails to Slack user IDs via users.lookupByEmail (requires
+ * users:read.email scope). Cached for the process lifetime — membership
+ * drift is picked up on restart / hourly re-expansion, both fine.
+ * Unknown emails are skipped with a debug log, not fatal.
  */
-export async function expandIgnoreSet(pgPool: Pool): Promise<Set<string>> {
-  const res = await pgPool.query<{ slack_id: string; kind: "user" | "usergroup" }>(
-    "SELECT slack_id, kind FROM ignore_list",
-  );
+const emailToUserCache = new Map<string, string | null>();
 
-  const ignored = new Set<string>();
-  const web = getSlackClient();
+export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<string>> {
+  const ids = new Set<string>();
 
-  for (const row of res.rows) {
-    if (row.kind === "user") {
-      ignored.add(row.slack_id);
-    } else {
-      try {
-        const members = await web.usergroups.users.list({ usergroup: row.slack_id });
-        for (const uid of members.users ?? []) {
-          ignored.add(uid);
-        }
-      } catch (err) {
-        // Fail open for this group (skip expansion) but log loudly — a stale
-        // usergroup shouldn't kill the whole nag run.
-        logError({
-          event: "slack.usergroup_expand_failed",
-          usergroup: row.slack_id,
-          message: err instanceof Error ? err.message : String(err),
-        });
+  for (const email of emails) {
+    const key = email.toLowerCase();
+    if (emailToUserCache.has(key)) {
+      const cached = emailToUserCache.get(key);
+      if (cached) ids.add(cached);
+      continue;
+    }
+    try {
+      const res = await slackCall("users.lookupByEmail", (web) =>
+        web.users.lookupByEmail({ email }),
+      );
+      const uid = res.user?.id ?? null;
+      emailToUserCache.set(key, uid);
+      if (uid) {
+        ids.add(uid);
+        logDebug({ event: "slack.email_resolved", email, user: uid });
+      } else {
+        logDebug({ event: "slack.email_unresolved", email });
       }
+    } catch (err) {
+      emailToUserCache.set(key, null);
+      logDebug({
+        event: "slack.email_lookup_failed",
+        email,
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  return ignored;
+  return ids;
+}
+
+/**
+ * Resolves a list of email addresses to Slack user IDs — the full ignore
+ * set for a scan. Email is the shared identity key between Team Catalog
+ * and Slack (both fed by Nav AD).
+ */
+export async function expandIgnoreSet(emails: string[]): Promise<Set<string>> {
+  return resolveEmailsToUserIds(emails);
 }
 
 export interface ReminderPayload {
@@ -214,14 +322,14 @@ export async function postReminder(
   channelId: string,
   { originalChannelId, ts, author, text, permalink }: ReminderPayload,
 ): Promise<void> {
-  const web = getSlackClient();
 
   const preview =
     text.length > MAX_PREVIEW_LENGTH ? `${text.slice(0, MAX_PREVIEW_LENGTH)}…` : text;
 
   const value = JSON.stringify({ channel: originalChannelId, ts });
 
-  const res = await web.chat.postMessage({
+  const res = await slackCall("chat.postMessage", (web) =>
+    web.chat.postMessage({
     channel: channelId,
     text: `Ubesvart melding fra <@${author}> i <#${originalChannelId}>: ${permalink}`,
     blocks: [
@@ -237,14 +345,15 @@ export async function postReminder(
         elements: [
           {
             type: "button",
-            text: { type: "plain_text", text: "Merk som løst" },
+            text: { type: "plain_text", text: ":solved: Mark as solved", emoji: true },
             action_id: "mark_solved",
             value,
           },
         ],
       },
     ],
-  });
+    }),
+  );
 
   log({ event: "slack.reminder_posted", channel: channelId, original_ts: ts, ok: res.ok === true });
 }

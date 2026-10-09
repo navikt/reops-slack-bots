@@ -40,7 +40,8 @@ Catalog — fails closed if Team Catalog is unreachable). Channels are picked
 in the admin UI from the channels the bot user has been invited to
 (settings keys `unanswered_reminder.source_channel_id` /
 `.target_channel_id`); the `RESEARCHOPS_*_CHANNEL_ID` env vars act as
-fallbacks.
+fallbacks. A single on/off switch (`frozen` setting) stops all outbound
+Slack calls — usable by any team member as a kill switch, no deploy needed.
 
 The root page `/` is a public (internal) explainer: what the bot does, which
 channels it watches, and how to use `:solved:` / invite the bot.
@@ -63,7 +64,7 @@ Required bot token scopes:
 - `reactions:read` — check for `:solved:` reactions
 - `reactions:write` — add `:solved:` when "Merk som løst" is clicked
 - `chat:write` — post reminders
-- `usergroups:read` — expand ignored usergroups into member IDs
+- `users:read.email` — resolve Team Catalog member emails to Slack users
 
 Interactivity: set the Request URL to
 `https://reops.ansatt.nav.no/api/slack/interactivity`.
@@ -77,7 +78,8 @@ Interactivity: set the Request URL to
 | `DATABASE_URL` | Postgres connection string (injected by Nais) |
 | `RESEARCHOPS_CHANNEL_ID` | Fallback channel to scan (admin UI setting wins) |
 | `RESEARCHOPS_INTERN_CHANNEL_ID` | Fallback reminder channel (admin UI setting wins) |
-| `SLACK_RESEARCHOPS_USERGROUP_ID` | Usergroup (`S…`) seeded onto the ignore list at startup |
+| `SLACK_WORKSPACE_SUBDOMAIN` | Workspace subdomain for permalink building (default `nav`) |
+| `ADMIN_DEV_BYPASS` | `true` skips auth on `/admin` — hard-gated to `NODE_ENV !== "production"`, local dev only |
 
 On Nais, the first two live in the `reops-slack-bots` secret; `DATABASE_URL`
 is injected from the `slackbots` database on the app's SQL instance.
@@ -86,9 +88,25 @@ is injected from the `slackbots` database on the app's SQL instance.
 
 ```zsh
 pnpm install
-pnpm dev        # Next.js on port 9092
-pnpm check      # tsc --noEmit
+docker compose up -d   # local Postgres on :5432 (db: slackbots, pw: dev)
+pnpm dev               # Next.js on port 9092 — migrations + jobs start if
+                       # DATABASE_URL is set in .env.local
+pnpm check             # tsc --noEmit
 ```
+
+`.env.local` for full local loop:
+
+```
+DATABASE_URL=postgres://postgres:dev@localhost:5432/slackbots
+DATABASE_SSL=false
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_SIGNING_SECRET=...
+ADMIN_DEV_BYPASS=true   # skips Azure AD + Team Catalog on /admin (dev only)
+```
+
+Note: with a token set, the hourly job runs from your laptop too and can post
+real reminders — pick a private test channel before enabling it. Buttons
+always hit the deployed interactivity URL; test clicks against prod.
 
 Without `DATABASE_URL` the server starts fine, but migrations and jobs
 are skipped (logged as `server.no_database_url`). The admin UI requires a

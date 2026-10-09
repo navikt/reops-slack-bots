@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
-import { BodyLong, Box, Button, Heading, VStack } from "@navikt/ds-react";
+import { BodyLong, Button, Heading, Page, VStack } from "@navikt/ds-react";
+import { PageBlock } from "@navikt/ds-react/Page";
 
 export default function ErrorPage({
   error,
@@ -16,22 +17,21 @@ export default function ErrorPage({
   }, [error]);
 
   return (
-    <Box padding="space-32" asChild>
-      <main>
+    <PageBlock as="main" width="lg" gutters>
+      <div style={{ paddingBlock: "2rem" }}>
         <VStack gap="space-16" align="start" style={{ maxWidth: "42rem" }}>
           <Heading level="1" size="large">
-            Noko gjekk gale
+            Something went wrong
           </Heading>
           <BodyLong>
-            Sida kunne ikkje visast akkurat no. Dette er oftast forbigaande —
-            prøv å laste sida på nytt. Verkar det framleis ikkje? Gi beskjed i
-            #researchops-intern, så tek vi ein kikk.
+            The page failed to load. Usually temporary, try reloading. Still
+            broken? Tell us in #researchops-intern.
           </BodyLong>
           <Button variant="secondary" onClick={reset}>
-            Prøv igjen
+            Try again
           </Button>
         </VStack>
-      </main>
-    </Box>
+      </div>
+    </PageBlock>
   );
 }
