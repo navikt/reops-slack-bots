@@ -1,5 +1,7 @@
 import { headers } from "next/headers";
 import { BodyLong, BodyShort, Box, Heading, Link, List, VStack } from "@navikt/ds-react";
+// RSC can't serialize dot-notation (<List.Item>) — import the component directly.
+import { ListItem } from "@navikt/ds-react/List";
 import { getSetting, listIgnoreEntries } from "../lib/db";
 import { listJoinedChannels } from "../lib/slack";
 import { requireReopsTeamMember } from "../lib/auth";
@@ -63,10 +65,10 @@ export default async function HomePage() {
             med ei «Merk som løst»-knapp. Ein melding tel som besvart når:
           </BodyLong>
           <List>
-            <List.Item>nokon legg på ein :solved:-reaksjon, eller</List.Item>
-            <List.Item>
+            <ListItem>nokon legg på ein :solved:-reaksjon, eller</ListItem>
+            <ListItem>
               eit teammedlem har skrive det siste svaret i tråden.
-            </List.Item>
+            </ListItem>
           </List>
           <BodyLong>
             Meldingar eldre enn {nagFrequencyDays || "14"} dagar blir ikkje
@@ -78,13 +80,13 @@ export default async function HomePage() {
             Bruk
           </Heading>
           <List>
-            <List.Item>
+            <ListItem>
               Løyst eit spørsmål? Legg på ein :solved:-reaksjon, eller klikk
               «Merk som løst» på påminninga.
-            </List.Item>
-            <List.Item>
+            </ListItem>
+            <ListItem>
               Vil du ha boten i ein kanal? Inviter med <code>/invite @reops</code>.
-            </List.Item>
+            </ListItem>
           </List>
 
           <BodyShort>
