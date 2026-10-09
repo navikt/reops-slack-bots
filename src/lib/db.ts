@@ -9,8 +9,9 @@ let pool: Pool | null = null;
 /**
  * Connection config. On Nais we get NAIS_DATABASE_<APP>_<DB>_* injected:
  * _URL is a ready postgresql:// string, and the instance requires
- * verify-ca with the mounted sqeletor certs (paths in _SSLROOTCERT/_SSLKEY_PK8
- * — pg needs the PKCS#8/DER key, hence _PK8). Locally, fall back to a plain
+ * verify-ca with the mounted sqeletor certs (paths in _SSLROOTCERT/_SSLKEY
+ * /_SSLCERT — use the PEM key; the _PK8 variant is DER, which Node TLS
+ * rejects with "DECODER routines::unsupported"). Locally, fall back to a plain
  * postgres:// DATABASE_URL from .env.local. The JDBC URL variant Nais also
  * injects is NOT usable by pg (JDBC syntax + sslmode).
  */
@@ -19,16 +20,21 @@ function connectionConfig(): Record<string, unknown> {
   const naisUrl = process.env[`${prefix}_URL`];
   if (naisUrl) {
     const sslRootCert = process.env[`${prefix}_SSLROOTCERT`];
-    const sslKey = process.env[`${prefix}_SSLKEY_PK8`];
+    const sslKey = process.env[`${prefix}_SSLKEY`]; // PEM — the _PK8 variant is DER, which Node TLS rejects
     const sslCert = process.env[`${prefix}_SSLCERT`];
     return {
       connectionString: naisUrl.split("?")[0],
       ssl:
         sslRootCert && sslKey && sslCert
           ? {
+              // Cloud SQL's server cert carries the instance DNS name in its
+              // SAN, but _URL hands us the IP — hostname check would always
+              // fail. CA-chain verification + client certs still authenticate
+              // both ends (standard Cloud SQL client behavior).
               rejectUnauthorized: true,
+              checkServerIdentity: () => undefined,
               ca: readFileSync(sslRootCert, "utf-8"),
-              key: readFileSync(sslKey),
+              key: readFileSync(sslKey, "utf-8"),
               cert: readFileSync(sslCert, "utf-8"),
             }
           : false,

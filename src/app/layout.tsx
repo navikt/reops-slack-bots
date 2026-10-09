@@ -5,7 +5,7 @@ import "@navikt/ds-css";
 
 export const metadata: Metadata = {
   title: "ReOps Slack automation",
-  description: "Internal Slack automation for Team ResearchOps",
+  description: "Internal Slack automation",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -78,8 +78,8 @@ export default async function HomePage() {
           )}
 
           <BodyLong>
-            <strong>@reops</strong> tracks unanswered questions for Team
-            ResearchOps.
+            <strong>@reops</strong> tracks unanswered questions in your
+            channels and nags the team until they are handled.
           </BodyLong>
 
           <Heading level="2" size="medium">
@@ -127,7 +127,7 @@ export default async function HomePage() {
 
           <BodyShort>
             <Link href="/admin">
-              {auth.status === "ok" ? "Go to admin" : "Admin (Team ResearchOps)"}
+              {auth.status === "ok" ? "Go to admin" : "Admin"}
             </Link>
           </BodyShort>
         </VStack>
