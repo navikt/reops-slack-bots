@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireReopsTeamMember } from "../../../../lib/auth";
+import { requireAdmin } from "../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -17,7 +17,7 @@ interface ResourceHit {
  * searchActive returns the full match list; we cap it client-safely.
  */
 export async function GET(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });

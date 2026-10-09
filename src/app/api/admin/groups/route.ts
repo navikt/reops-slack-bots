@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import {
-  requireReopsTeamMember,
+  requireAdmin,
   searchGroups,
   type GroupKind,
 } from "../../../../lib/auth";
@@ -13,7 +13,7 @@ const KINDS: GroupKind[] = ["team", "cluster", "productarea"];
 
 /** GET ?q=... searches Team Catalog groups. Without q, returns configured groups. */
 export async function GET(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
@@ -35,7 +35,7 @@ export async function GET(req: Request): Promise<Response> {
 
 /** POST { kind, id, label } — add a group to the ignore set. */
 export async function POST(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
@@ -59,7 +59,7 @@ export async function POST(req: Request): Promise<Response> {
 
 /** DELETE { kind, id } — remove a group. */
 export async function DELETE(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });

@@ -17,14 +17,15 @@ reading and replying to the actual thread.
 
 A message counts as unanswered only if ALL of these hold:
 
-- parent message has no `:solved:` reaction
-- message is older than 1 hour (grace period) and younger than
-  `nag_frequency_days` — the job never re-scans ancient history
+- message is past its grace period (default 1 *work* hour — evenings and
+  weekends don't count; a Friday-evening post becomes due Monday 10:00) and
+  younger than `scan_window_days` — the job never re-scans ancient history
 - author is not on the ignore list
-- if the message has a thread: last reply is NOT from someone on the ignore
-  list (team member), and no message in the thread has `:solved:` —
-  a later non-team reply flips it back to nag-worthy
-- it hasn't been nagged within `nag_frequency_days` (see `nag_log`)
+- not handled: `:solved:` (on the parent or a reply, set by anyone) and a
+  team last-reply are equal-rank handled signals — recency decides, so a
+  follow-up question from a non-team member re-opens the thread (logic in
+  `src/lib/thread-handled.ts`, unit-tested)
+- it hasn't been nagged within the `re_nag_hours` cooldown (see `nag_log`)
 
 ## Architecture
 
@@ -33,11 +34,18 @@ Cron-on-boot pattern: `instrumentation.ts` calls `server.ts` on process start,
 which runs migrations (`src/lib/migrations/*.sql`, tracked in
 `schema_migrations`) and starts interval jobs (`src/lib/runner.ts`).
 The unanswered-reminder job wakes hourly; whether a message is due
-for a (re-)nag is driven by the `nag_frequency_days` row in `settings`.
+for a (re-)nag is driven by the `scan_window_days` / `min_age_hours` /
+`re_nag_hours` rows in `settings`. Grace-period math lives in
+`src/lib/work-hours.ts` (unit-tested in `work-hours.test.ts`, run with
+`pnpm test`).
 
-Admin UI at `/admin`, gated server-side to Team ResearchOps members
-(Azure AD token via `@navikt/oasis`, live membership lookup against Team
-Catalog — fails closed if Team Catalog is unreachable). Channels are picked
+Admin UI at `/admin`, gated server-side (Azure AD token via `@navikt/oasis`,
+live membership lookup against Team Catalog — fails closed if Team Catalog
+is unreachable). Who counts as admin is configured in the admin UI itself:
+members of the Team Catalog groups in the `admin_groups` table. Bootstrap:
+when no admin group is configured yet, any logged-in Nav user passes —
+first-come-first-served, the first visitor claims the page by adding their
+team. Channels are picked
 in the admin UI from the channels the bot user has been invited to
 (settings keys `unanswered_reminder.source_channel_id` /
 `.target_channel_id`); the `RESEARCHOPS_*_CHANNEL_ID` env vars act as

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireReopsTeamMember } from "../../../../lib/auth";
+import { requireAdmin } from "../../../../lib/auth";
 import { addIgnoreEntry, removeIgnoreEntry } from "../../../../lib/db";
 import { log, logError } from "../../../../lib/log";
 
@@ -11,7 +11,7 @@ function authStatusToResponse(status: "forbidden" | "unavailable" | "unauthentic
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") return authStatusToResponse(auth.status);
 
   let body: { email?: string; label?: string; navIdent?: string };
@@ -50,7 +50,7 @@ export async function POST(req: Request): Promise<Response> {
 }
 
 export async function DELETE(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") return authStatusToResponse(auth.status);
 
   let body: { id?: number };

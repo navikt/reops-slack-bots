@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireReopsTeamMember } from "../../../../lib/auth";
+import { requireAdmin } from "../../../../lib/auth";
 import { setSetting } from "../../../../lib/db";
 import { log } from "../../../../lib/log";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
@@ -16,7 +16,7 @@ export async function POST(req: Request): Promise<Response> {
     frozen?: boolean;
     scanWindowDays?: number;
     minAgeHours?: number;
-    reNagDays?: number;
+    reNagHours?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   };
@@ -49,13 +49,13 @@ export async function POST(req: Request): Promise<Response> {
     log({ event: "admin.settings_changed", key: "min_age_hours", value: String(hours), by: auth.user.navIdent });
   }
 
-  if (body.reNagDays !== undefined) {
-    const days = Math.trunc(body.reNagDays);
-    if (!Number.isFinite(days) || days < 1 || days > 90) {
-      return NextResponse.json({ error: "reNagDays must be 1-90" }, { status: 400 });
+  if (body.reNagHours !== undefined) {
+    const hours = body.reNagHours;
+    if (!Number.isFinite(hours) || hours < 0.5 || hours > 24 * 90) {
+      return NextResponse.json({ error: "reNagHours must be 0.5-2160" }, { status: 400 });
     }
-    await setSetting("re_nag_days", String(days));
-    log({ event: "admin.settings_changed", key: "re_nag_days", value: String(days), by: auth.user.navIdent });
+    await setSetting("re_nag_hours", String(hours));
+    log({ event: "admin.settings_changed", key: "re_nag_hours", value: String(hours), by: auth.user.navIdent });
   }
 
   // Channel pickers: null/empty string clears the setting (job skips until set).

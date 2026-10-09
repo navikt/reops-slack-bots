@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireReopsTeamMember } from "../../../../lib/auth";
+import { requireAdmin } from "../../../../lib/auth";
 import { getSetting } from "../../../../lib/db";
 import { postUnansweredDigest } from "../../../../lib/slack";
 import { runJob } from "../../../../lib/runner";
@@ -15,7 +15,7 @@ export const runtime = "nodejs";
  *    target channel. Wiring check only — no nag_log write, no scan.
  */
 export async function POST(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });

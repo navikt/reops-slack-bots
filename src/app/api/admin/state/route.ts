@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getGroupMemberEmails, requireReopsTeamMember } from "../../../../lib/auth";
-import { getSetting, listGroups, listIgnoreEntries } from "../../../../lib/db";
+import { getGroupMemberEmails, requireAdmin } from "../../../../lib/auth";
+import { getSetting, listAdminGroups, listAdminIdents, listGroups, listIgnoreEntries } from "../../../../lib/db";
 import { listJoinedChannels } from "../../../../lib/slack";
 import { logError } from "../../../../lib/log";
 
@@ -13,22 +13,24 @@ interface LastScan {
 }
 
 export async function GET(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
   }
 
-  const [frozen, scanWindowDays, minAgeHours, reNagDays, ignoreList, sourceChannelId, targetChannelId, lastScanRaw] =
+  const [frozen, scanWindowDays, minAgeHours, reNagHours, ignoreList, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminIdents] =
     await Promise.all([
       getSetting("frozen"),
       getSetting("scan_window_days"),
       getSetting("min_age_hours"),
-      getSetting("re_nag_days"),
+      getSetting("re_nag_hours"),
       listIgnoreEntries(),
       getSetting("unanswered_reminder.source_channel_id"),
       getSetting("unanswered_reminder.target_channel_id"),
       getSetting("unanswered_reminder.last_scan"),
+      listAdminGroups(),
+      listAdminIdents(),
     ]);
 
   // Channel list requires a working Slack token; degrade gracefully so the
@@ -56,27 +58,34 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   // Configured Team Catalog groups with live member counts (best effort).
+  // Applies to both ignore-groups and admin-groups.
+  const withCounts = async (gs: Array<{ id: string; kind: "team" | "cluster" | "productarea"; label: string }>) =>
+    Promise.all(
+      gs.map(async (g) => {
+        try {
+          const emails = await getGroupMemberEmails(g.kind, g.id);
+          return { ...g, memberCount: emails.length, error: null };
+        } catch (err) {
+          return {
+            ...g,
+            memberCount: null,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }),
+    );
+
   const groups = await listGroups();
-  const groupsWithCounts = await Promise.all(
-    groups.map(async (g) => {
-      try {
-        const emails = await getGroupMemberEmails(g.kind, g.id);
-        return { ...g, memberCount: emails.length, error: null };
-      } catch (err) {
-        return {
-          ...g,
-          memberCount: null,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }),
-  );
+  const [groupsWithCounts, adminGroupsWithCounts] = await Promise.all([
+    withCounts(groups),
+    withCounts(adminGroups),
+  ]);
 
   return NextResponse.json({
     frozen: isFrozen,
     scanWindowDays: Number.parseInt(scanWindowDays ?? "14", 10),
     minAgeHours: Number.parseInt(minAgeHours ?? "1", 10),
-    reNagDays: Number.parseInt(reNagDays ?? "7", 10),
+    reNagHours: Number.parseFloat(reNagHours ?? String(7 * 24)),
     ignoreList: ignoreList.map((r) => ({
       id: r.id,
       kind: r.kind,
@@ -90,5 +99,8 @@ export async function GET(req: Request): Promise<Response> {
     channelsError,
     lastScan,
     groups: groupsWithCounts,
+    adminGroups: adminGroupsWithCounts,
+    adminIdents,
+    adminBootstrap: adminGroups.length === 0 && adminIdents.length === 0,
   });
 }

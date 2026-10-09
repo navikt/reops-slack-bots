@@ -66,11 +66,16 @@ interface LastScan {
   nagged: number;
 }
 
+interface AdminIdentEntry {
+  nav_ident: string;
+  label: string | null;
+}
+
 interface AdminState {
   frozen: boolean;
   scanWindowDays: number;
   minAgeHours: number;
-  reNagDays: number;
+  reNagHours: number;
   ignoreList: IgnoreEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
@@ -78,7 +83,24 @@ interface AdminState {
   channelsError: string | null;
   lastScan: LastScan | null;
   groups: GroupEntry[];
+  adminGroups: GroupEntry[];
+  adminIdents: AdminIdentEntry[];
+  adminBootstrap: boolean;
 }
+
+/** Re-remind cooldown choices, in hours (0.5 = 30 minutes). */
+const RE_NAG_OPTIONS: Array<{ hours: number; label: string }> = [
+  { hours: 0.5, label: "30 minutes" },
+  { hours: 1, label: "1 hour" },
+  { hours: 2, label: "2 hours" },
+  { hours: 3, label: "3 hours" },
+  { hours: 24, label: "1 day" },
+  { hours: 48, label: "2 days" },
+  { hours: 72, label: "3 days" },
+  { hours: 120, label: "5 days" },
+  { hours: 168, label: "7 days" },
+  { hours: 336, label: "14 days" },
+];
 
 function GroupTableRow({
   group,
@@ -152,11 +174,264 @@ function GroupTableRow({
           size="small"
           icon={<TrashIcon aria-hidden />}
           title={`Remove ${group.label}`}
-          disabled={busy}
           onClick={onRemove}
         />
       </Table.DataCell>
     </Table.ExpandableRow>
+  );
+}
+
+/** Card listing Team Catalog groups with a combobox to add more. Shared by
+ * ignore-groups and admin-groups. */
+function GroupManager({
+  title,
+  description,
+  emptyText,
+  groups,
+  busy,
+  options,
+  searching,
+  selected,
+  onSearch,
+  onSelect,
+  onAdd,
+  onRemove,
+}: {
+  title: string;
+  description: string;
+  emptyText: string;
+  groups: GroupEntry[];
+  busy: boolean;
+  options: GroupOption[];
+  searching: boolean;
+  selected: GroupOption | null;
+  onSearch: (q: string) => void;
+  onSelect: (g: GroupOption | null) => void;
+  onAdd: () => void;
+  onRemove: (g: GroupEntry) => void;
+}) {
+  return (
+    <Box
+      background="raised"
+      borderWidth="1"
+      borderColor="neutral-subtle"
+      borderRadius="12"
+      padding="space-24"
+      style={{ width: "100%" }}
+      asChild
+    >
+      <section aria-label={title}>
+        <VStack gap="space-12" align="start" style={{ width: "100%" }}>
+          <Heading level="4" size="xsmall">
+            {title}
+          </Heading>
+          <BodyShort textColor="subtle">{description}</BodyShort>
+          {groups.length === 0 ? (
+            <BodyShort textColor="subtle">{emptyText}</BodyShort>
+          ) : (
+            <Table size="small">
+              <Table.Body>
+                {groups.map((g) => (
+                  <GroupTableRow
+                    key={`${g.kind}:${g.id}`}
+                    group={g}
+                    busy={busy}
+                    onRemove={() => onRemove(g)}
+                  />
+                ))}
+              </Table.Body>
+            </Table>
+          )}
+          {/* List and add-form are two visual groups — extra air between. */}
+          <HStack gap="space-12" align="end" wrap className="addFormRow">
+            <div style={{ width: "24rem", maxWidth: "100%" }}>
+              <Combobox
+                label="Add group"
+                description="Team, cluster or seksjon from Team Catalog. Min 3 chars."
+                options={options.map((g) => ({
+                  label: `${g.label} (${g.kind})`,
+                  value: `${g.kind}:${g.id}`,
+                }))}
+                filteredOptions={options.map((g) => ({
+                  label: `${g.label} (${g.kind})`,
+                  value: `${g.kind}:${g.id}`,
+                }))}
+                isLoading={searching}
+                shouldAutocomplete={false}
+                onChange={(v) => {
+                  const q =
+                    v && typeof v === "object" && "target" in v
+                      ? (v as React.ChangeEvent<HTMLInputElement>).target.value
+                      : String(v ?? "");
+                  onSearch(q);
+                }}
+                onToggleSelected={(value, isSelected) => {
+                  onSelect(
+                    isSelected
+                      ? (options.find((g) => `${g.kind}:${g.id}` === value) ?? null)
+                      : null,
+                  );
+                }}
+                selectedOptions={
+                  selected
+                    ? [
+                        {
+                          label: `${selected.label} (${selected.kind})`,
+                          value: `${selected.kind}:${selected.id}`,
+                        },
+                      ]
+                    : []
+                }
+              />
+            </div>
+            {/* No disabled state (contrast/a11y): button appears when usable. */}
+            {!busy && selected && (
+              <Button variant="secondary" onClick={onAdd}>
+                Add
+              </Button>
+            )}
+          </HStack>
+        </VStack>
+      </section>
+    </Box>
+  );
+}
+
+/** Card listing people with a combobox to add more. Shared by the ignore
+ * list (matched to Slack via email) and admin individuals (navIdent). */
+function PersonManager<T extends { label: string | null }>({
+  title,
+  description,
+  emptyText,
+  people,
+  busy,
+  options,
+  searching,
+  selected,
+  optionLabel,
+  optionValue,
+  rowTitle,
+  rowSub,
+  rowKey,
+  onSearch,
+  onSelect,
+  onAdd,
+  onRemove,
+}: {
+  title: string;
+  description: string;
+  emptyText: string;
+  people: T[];
+  busy: boolean;
+  options: PersonHit[];
+  searching: boolean;
+  selected: PersonHit | null;
+  optionLabel: (p: PersonHit) => string;
+  optionValue: (p: PersonHit) => string;
+  rowTitle: (p: T) => string;
+  rowSub: (p: T) => string;
+  rowKey: (p: T) => string;
+  onSearch: (q: string) => void;
+  onSelect: (p: PersonHit | null) => void;
+  onAdd: () => void;
+  onRemove: (p: T) => void;
+}) {
+  return (
+    <Box
+      background="raised"
+      borderWidth="1"
+      borderColor="neutral-subtle"
+      borderRadius="12"
+      padding="space-24"
+      style={{ width: "100%" }}
+      asChild
+    >
+      <section aria-label={title}>
+        <VStack gap="space-12" align="start" style={{ width: "100%" }}>
+          <Heading level="4" size="xsmall">
+            {title}
+          </Heading>
+          <BodyShort textColor="subtle">{description}</BodyShort>
+          {people.length === 0 ? (
+            <BodyShort textColor="subtle">{emptyText}</BodyShort>
+          ) : (
+            <Table size="small">
+              <Table.Body>
+                {people.map((p) => (
+                  <Table.Row key={rowKey(p)}>
+                    {/* Empty cell aligning with the group rows' chevron column */}
+                    <Table.DataCell className="tableCellAction" />
+                    <Table.HeaderCell scope="row" className="tableCell">
+                      {rowTitle(p)}
+                    </Table.HeaderCell>
+                    <Table.DataCell
+                      textSize="small"
+                      className="tableCell tableCellSubtle"
+                    >
+                      {rowSub(p)}
+                    </Table.DataCell>
+                    <Table.DataCell align="right" className="tableCellAction">
+                      <Button
+                        variant="tertiary"
+                        data-color="danger"
+                        size="small"
+                        icon={<TrashIcon aria-hidden />}
+                        title={`Remove ${rowTitle(p)}`}
+                        onClick={() => onRemove(p)}
+                      />
+                    </Table.DataCell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table>
+          )}
+          {/* List and add-form are two visual groups — extra air between. */}
+          <HStack gap="space-12" align="end" wrap className="addFormRow">
+            <div style={{ width: "24rem", maxWidth: "100%" }}>
+              <Combobox
+                label="Add person"
+                description={description}
+                options={options.map((p) => ({
+                  label: optionLabel(p),
+                  value: optionValue(p),
+                }))}
+                filteredOptions={options.map((p) => ({
+                  label: optionLabel(p),
+                  value: optionValue(p),
+                }))}
+                isLoading={searching}
+                shouldAutocomplete={false}
+                onChange={(e) => {
+                  const v =
+                    e && typeof e === "object" && "target" in e
+                      ? (e as React.ChangeEvent<HTMLInputElement>).target.value
+                      : String(e ?? "");
+                  onSearch(v);
+                }}
+                onToggleSelected={(value, isSelected) => {
+                  onSelect(
+                    isSelected
+                      ? (options.find((p) => optionValue(p) === value) ?? null)
+                      : null,
+                  );
+                }}
+                selectedOptions={
+                  selected
+                    ? [{ label: optionLabel(selected), value: optionValue(selected) }]
+                    : []
+                }
+              />
+            </div>
+            {/* No disabled state (contrast/a11y): appears when usable. */}
+            {!busy && selected && (
+              <Button variant="secondary" onClick={onAdd}>
+                Add
+              </Button>
+            )}
+          </HStack>
+        </VStack>
+      </section>
+    </Box>
   );
 }
 
@@ -172,6 +447,12 @@ export function AdminClient() {
   const [groupOptions, setGroupOptions] = useState<GroupOption[]>([]);
   const [groupSearching, setGroupSearching] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<GroupOption | null>(null);
+  const [adminGroupOptions, setAdminGroupOptions] = useState<GroupOption[]>([]);
+  const [adminGroupSearching, setAdminGroupSearching] = useState(false);
+  const [selectedAdminGroup, setSelectedAdminGroup] = useState<GroupOption | null>(null);
+  const [adminPeopleOptions, setAdminPeopleOptions] = useState<PersonHit[]>([]);
+  const [adminPeopleSearching, setAdminPeopleSearching] = useState(false);
+  const [selectedAdminPerson, setSelectedAdminPerson] = useState<PersonHit | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -192,18 +473,36 @@ export function AdminClient() {
   }, [load]);
 
   // Refetch when the tab regains focus — covers "tab to Slack, /invite the
-  // bot, tab back" without a manual reload.
+  // bot, tab back" without a manual reload. Track real backgrounding via
+  // visibilitychange and throttle: dev-server HMR rebuilds fire spurious
+  // focus events in a loop (page never hidden), which otherwise turns this
+  // into an infinite refetch storm on first boot.
   useEffect(() => {
-    const onFocus = () => void load();
+    let wasHidden = false;
+    let lastFetch = 0;
+    const onVisibility = () => {
+      wasHidden = document.hidden;
+    };
+    const onFocus = () => {
+      const now = Date.now();
+      if (!wasHidden || now - lastFetch < 5000) return;
+      lastFetch = now;
+      wasHidden = false;
+      void load();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [load]);
 
   const saveSettings = async (patch: {
     frozen?: boolean;
     scanWindowDays?: number;
     minAgeHours?: number;
-    reNagDays?: number;
+    reNagHours?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   }) => {
@@ -228,26 +527,52 @@ export function AdminClient() {
     }
   };
 
-  const searchPeople = async (query: string) => {
-    if (query.trim().length < 3) {
-      setPeopleOptions([]);
-      return;
-    }
-    setSearching(true);
-    try {
-      const res = await fetch(
-        `/api/admin/people?q=${encodeURIComponent(query)}`,
-      );
-      if (!res.ok) return;
-      const data = (await res.json()) as { people: PersonHit[] };
-      setPeopleOptions(data.people.filter((p) => p.email));
-    } finally {
-      setSearching(false);
-    }
+  // Debounced + aborted people search (see makeGroupSearch for why).
+  // Search results need an email for the ignore list (Slack matching);
+  // admin-person search keeps everyone (navIdent is enough).
+  const makePeopleSearch = (
+    setOptions: (o: PersonHit[]) => void,
+    setSearchingFlag: (b: boolean) => void,
+    requireEmail: boolean,
+  ) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight: AbortController | null = null;
+    return (query: string) => {
+      if (timer) clearTimeout(timer);
+      const q = query.trim();
+      if (q.length < 3) {
+        inFlight?.abort();
+        setOptions([]);
+        setSearchingFlag(false);
+        return;
+      }
+      setSearchingFlag(true);
+      timer = setTimeout(() => {
+        inFlight?.abort();
+        inFlight = new AbortController();
+        void fetch(`/api/admin/people?q=${encodeURIComponent(q)}`, {
+          signal: inFlight.signal,
+        })
+          .then(async (res) => {
+            if (!res.ok) return;
+            const data = (await res.json()) as { people: PersonHit[] };
+            setOptions(
+              requireEmail ? data.people.filter((p) => p.email) : data.people,
+            );
+          })
+          .catch(() => undefined)
+          .finally(() => setSearchingFlag(false));
+      }, 350);
+    };
   };
 
+  const searchPeople = makePeopleSearch(setPeopleOptions, setSearching, true);
+  // Admin people are matched by navIdent — no email required.
+  const searchAdminPeople = makePeopleSearch(setAdminPeopleOptions, setAdminPeopleSearching, false);
+
   const addPerson = async () => {
-    if (!selectedPerson?.email) return;
+    const person = selectedPerson;
+    if (!person?.email) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -255,9 +580,9 @@ export function AdminClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: selectedPerson.email,
-          label: selectedPerson.fullName,
-          navIdent: selectedPerson.navIdent,
+          email: person.email,
+          label: person.fullName,
+          navIdent: person.navIdent,
         }),
       });
       if (!res.ok) {
@@ -274,33 +599,59 @@ export function AdminClient() {
     }
   };
 
-  const searchGroupsFn = async (query: string) => {
-    if (query.trim().length < 3) {
-      setGroupOptions([]);
-      return;
-    }
-    setGroupSearching(true);
-    try {
-      const res = await fetch(
-        `/api/admin/groups?q=${encodeURIComponent(query)}`,
-      );
-      if (!res.ok) return;
-      const data = (await res.json()) as { groups: GroupOption[] };
-      setGroupOptions(data.groups);
-    } finally {
-      setGroupSearching(false);
-    }
-  };
+  // Group search is shared by ignore-groups and admin-groups (same Team
+  // Catalog endpoint); only the target state differs. Debounced + aborted:
+  // Team Catalog round-trips take seconds, so one fetch per keystroke piles
+  // up into a stale-response storm.
+  const makeGroupSearch =
+    (
+      setOptions: (o: GroupOption[]) => void,
+      setSearchingFlag: (b: boolean) => void,
+    ) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let inFlight: AbortController | null = null;
+      return (query: string) => {
+        if (timer) clearTimeout(timer);
+        const q = query.trim();
+        if (q.length < 3) {
+          inFlight?.abort();
+          setOptions([]);
+          setSearchingFlag(false);
+          return;
+        }
+        setSearchingFlag(true);
+        timer = setTimeout(() => {
+          inFlight?.abort();
+          inFlight = new AbortController();
+          void fetch(`/api/admin/groups?q=${encodeURIComponent(q)}`, {
+            signal: inFlight.signal,
+          })
+            .then(async (res) => {
+              if (!res.ok) return;
+              const data = (await res.json()) as { groups: GroupOption[] };
+              setOptions(data.groups);
+            })
+            .catch(() => undefined) // aborted or network error — ignore
+            .finally(() => setSearchingFlag(false));
+        }, 350);
+      };
+    };
 
-  const addGroupFn = async () => {
-    if (!selectedGroup) return;
+  const searchGroupsFn = makeGroupSearch(setGroupOptions, setGroupSearching);
+  const searchAdminGroupsFn = makeGroupSearch(setAdminGroupOptions, setAdminGroupSearching);
+
+  const addGroupTo = async (
+    endpoint: string,
+    group: GroupOption,
+    clear: () => void,
+  ) => {
     setBusy(true);
     setActionError(null);
     try {
-      const res = await fetch("/api/admin/groups", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(selectedGroup),
+        body: JSON.stringify(group),
       });
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as {
@@ -309,18 +660,18 @@ export function AdminClient() {
         setActionError(data?.error ?? `Could not add group (${res.status})`);
         return;
       }
-      setSelectedGroup(null);
+      clear();
       await load();
     } finally {
       setBusy(false);
     }
   };
 
-  const removeGroupFn = async (g: GroupEntry) => {
+  const removeGroupFrom = async (endpoint: string, g: GroupEntry) => {
     setBusy(true);
     setActionError(null);
     try {
-      const res = await fetch("/api/admin/groups", {
+      const res = await fetch(endpoint, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind: g.kind, id: g.id }),
@@ -346,6 +697,50 @@ export function AdminClient() {
       });
       if (!res.ok) {
         setActionError(`Could not remove entry (${res.status})`);
+        return;
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addAdminPerson = async () => {
+    const person = selectedAdminPerson;
+    if (!person?.navIdent) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/admins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ navIdent: person.navIdent, label: person.fullName }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setActionError(data?.error ?? `Could not add (${res.status})`);
+        return;
+      }
+      setSelectedAdminPerson(null);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAdminPerson = async (navIdent: string) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/admins", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ navIdent }),
+      });
+      if (!res.ok) {
+        setActionError(`Could not remove (${res.status})`);
         return;
       }
       await load();
@@ -407,10 +802,12 @@ export function AdminClient() {
             <Heading level="2" size="medium" spacing>
               Bot on/off
             </Heading>
-            <BodyShort>Off = zero Slack messages from bot.</BodyShort>
+            <BodyShort>
+              If the bot is disabled, it prevents Slack messages from being sent
+              by the bot.
+            </BodyShort>
             <Switch
               checked={!state.frozen}
-              disabled={busy}
               onChange={(e) => void saveSettings({ frozen: !e.target.checked })}
             >
               Bot is active
@@ -499,7 +896,6 @@ export function AdminClient() {
                       label="Scan window"
                       description="Ignore messages older than this."
                       value={String(state.scanWindowDays)}
-                      disabled={busy}
                       onChange={(e) =>
                         void saveSettings({
                           scanWindowDays: Number(e.target.value),
@@ -515,9 +911,8 @@ export function AdminClient() {
                     </Select>
                     <Select
                       label="Grace period"
-                      description="Wait this long before a message counts as unanswered."
+                      description="Work hours (Mon–Fri 09–16:30) before a message counts as unanswered. Evening posts wait until next morning."
                       value={String(state.minAgeHours)}
-                      disabled={busy}
                       onChange={(e) =>
                         void saveSettings({
                           minAgeHours: Number(e.target.value),
@@ -536,18 +931,17 @@ export function AdminClient() {
                     <Select
                       label="Re-remind after"
                       description="Cooldown before a message appears in the digest again."
-                      value={String(state.reNagDays)}
-                      disabled={busy}
+                      value={String(state.reNagHours)}
                       onChange={(e) =>
                         void saveSettings({
-                          reNagDays: Number(e.target.value),
+                          reNagHours: Number(e.target.value),
                         })
                       }
                       style={{ width: "100%" }}
                     >
-                      {[1, 2, 3, 5, 7, 14].map((d) => (
-                        <option key={d} value={d}>
-                          {d} {d === 1 ? "day" : "days"}
+                      {RE_NAG_OPTIONS.map((o) => (
+                        <option key={o.hours} value={o.hours}>
+                          {o.label}
                         </option>
                       ))}
                     </Select>
@@ -584,7 +978,6 @@ export function AdminClient() {
                       label="Channel to monitor"
                       description="Checked for answers"
                       value={state.sourceChannelId ?? ""}
-                      disabled={busy}
                       onChange={(e) =>
                         void saveSettings({
                           sourceChannelId: e.target.value || null,
@@ -604,7 +997,6 @@ export function AdminClient() {
                       label="Channel for reminders"
                       description="Reminders are posted here"
                       value={state.targetChannelId ?? ""}
-                      disabled={busy}
                       onChange={(e) =>
                         void saveSettings({
                           targetChannelId: e.target.value || null,
@@ -633,235 +1025,108 @@ export function AdminClient() {
                   </Heading>
                   <BodyShort textColor="subtle">
                     Messages from these people never trigger reminders. A thread
-                    counts as handled when one of them wrote the last reply.
+                    counts as handled when one of them wrote the last reply — or
+                    when the newest :solved: is more recent than the last
+                    follow-up.
                   </BodyShort>
                 </VStack>
 
-                <Box
-                  background="raised"
-                  borderWidth="1"
-                  borderColor="neutral-subtle"
-                  borderRadius="12"
-                  padding="space-24"
-                  style={{ width: "100%" }}
-                  asChild
-                >
-                  <section aria-label="Groups">
-                    <VStack
-                      gap="space-12"
-                      align="start"
-                      style={{ width: "100%" }}
-                    >
-                      <Heading level="4" size="xsmall">
-                        Groups
-                      </Heading>
-                      {state.groups.length === 0 ? (
-                        <BodyShort textColor="subtle">
-                          No groups yet. Add the team to cover everyone at once.
-                        </BodyShort>
-                      ) : (
-                        <Table size="small">
-                          <Table.Body>
-                            {state.groups.map((g) => (
-                              <GroupTableRow
-                                key={`${g.kind}:${g.id}`}
-                                group={g}
-                                busy={busy}
-                                onRemove={() => void removeGroupFn(g)}
-                              />
-                            ))}
-                          </Table.Body>
-                        </Table>
-                      )}
-                      {/* List and add-form are two visual groups — extra air between. */}
-                      <HStack
-                        gap="space-12"
-                        align="end"
-                        wrap
-                        className="addFormRow"
-                      >
-                        <div style={{ width: "24rem", maxWidth: "100%" }}>
-                          <Combobox
-                            label="Add group"
-                            description="Team, cluster or seksjon from Team Catalog. Min 3 chars."
-                            options={groupOptions.map((g) => ({
-                              label: `${g.label} (${g.kind})`,
-                              value: `${g.kind}:${g.id}`,
-                            }))}
-                            filteredOptions={groupOptions.map((g) => ({
-                              label: `${g.label} (${g.kind})`,
-                              value: `${g.kind}:${g.id}`,
-                            }))}
-                            isLoading={groupSearching}
-                            shouldAutocomplete={false}
-                            onChange={(v) => {
-                              const q =
-                                v && typeof v === "object" && "target" in v
-                                  ? (v as React.ChangeEvent<HTMLInputElement>)
-                                      .target.value
-                                  : String(v ?? "");
-                              void searchGroupsFn(q);
-                            }}
-                            onToggleSelected={(value, selected) => {
-                              if (selected) {
-                                setSelectedGroup(
-                                  groupOptions.find(
-                                    (g) => `${g.kind}:${g.id}` === value,
-                                  ) ?? null,
-                                );
-                              } else {
-                                setSelectedGroup(null);
-                              }
-                            }}
-                            selectedOptions={
-                              selectedGroup
-                                ? [
-                                    {
-                                      label: `${selectedGroup.label} (${selectedGroup.kind})`,
-                                      value: `${selectedGroup.kind}:${selectedGroup.id}`,
-                                    },
-                                  ]
-                                : []
-                            }
-                          />
-                        </div>
-                        <Button
-                          variant="secondary"
-                          disabled={busy || !selectedGroup}
-                          onClick={() => void addGroupFn()}
-                        >
-                          Add group
-                        </Button>
-                      </HStack>
-                    </VStack>
-                  </section>
-                </Box>
+                <GroupManager
+                  title="Groups"
+                  description="Members of these groups count as team."
+                  emptyText="No groups yet. Add the team to cover everyone at once."
+                  groups={state.groups}
+                  busy={busy}
+                  options={groupOptions}
+                  searching={groupSearching}
+                  selected={selectedGroup}
+                  onSearch={(q) => void searchGroupsFn(q)}
+                  onSelect={setSelectedGroup}
+                  onAdd={() => {
+                    if (selectedGroup) {
+                      void addGroupTo("/api/admin/groups", selectedGroup, () =>
+                        setSelectedGroup(null),
+                      );
+                    }
+                  }}
+                  onRemove={(g) => void removeGroupFrom("/api/admin/groups", g)}
+                />
 
-                <Box
-                  background="raised"
-                  borderWidth="1"
-                  borderColor="neutral-subtle"
-                  borderRadius="12"
-                  padding="space-24"
-                  style={{ width: "100%" }}
-                  asChild
-                >
-                  <section aria-label="Individuals">
-                    <VStack
-                      gap="space-12"
-                      align="start"
-                      style={{ width: "100%" }}
-                    >
-                      <Heading level="4" size="xsmall">
-                        Individuals
-                      </Heading>
-                      {state.ignoreList.length === 0 ? (
-                        <BodyShort textColor="subtle">
-                          Usually not needed when the team group covers it.
-                        </BodyShort>
-                      ) : (
-                        <Table size="small">
-                          <Table.Body>
-                            {state.ignoreList.map((entry) => (
-                              <Table.Row key={entry.id}>
-                                {/* Empty cell aligning with the group rows' chevron column */}
-                                <Table.DataCell className="tableCellAction" />
-                                <Table.HeaderCell
-                                  scope="row"
-                                  className="tableCell"
-                                >
-                                  {entry.label ?? entry.email}
-                                </Table.HeaderCell>
-                                <Table.DataCell
-                                  textSize="small"
-                                  className="tableCell tableCellSubtle"
-                                >
-                                  {entry.label ? entry.email : ""}
-                                </Table.DataCell>
-                                <Table.DataCell
-                                  align="right"
-                                  className="tableCellAction"
-                                >
-                                  <Button
-                                    variant="tertiary"
-                                    data-color="danger"
-                                    size="small"
-                                    icon={<TrashIcon aria-hidden />}
-                                    title={`Remove ${entry.email}`}
-                                    disabled={busy}
-                                    onClick={() => void removeIgnore(entry.id)}
-                                  />
-                                </Table.DataCell>
-                              </Table.Row>
-                            ))}
-                          </Table.Body>
-                        </Table>
-                      )}
-                      {/* List and add-form are two visual groups — extra air between. */}
-                      <HStack
-                        gap="space-12"
-                        align="end"
-                        wrap
-                        className="addFormRow"
-                      >
-                        <div style={{ width: "24rem", maxWidth: "100%" }}>
-                          <Combobox
-                            label="Add person"
-                            description="Search by name. Matched to Slack via email."
-                            options={peopleOptions.map((p) => ({
-                              label: `${p.fullName ?? p.navIdent} (${p.email})`,
-                              value: p.email ?? "",
-                            }))}
-                            filteredOptions={peopleOptions.map((p) => ({
-                              label: `${p.fullName ?? p.navIdent} (${p.email})`,
-                              value: p.email ?? "",
-                            }))}
-                            isLoading={searching}
-                            shouldAutocomplete={false}
-                            onChange={(e) => {
-                              const v =
-                                e && typeof e === "object" && "target" in e
-                                  ? (e as React.ChangeEvent<HTMLInputElement>)
-                                      .target.value
-                                  : String(e ?? "");
-                              void searchPeople(v);
-                            }}
-                            onToggleSelected={(value, selected) => {
-                              if (selected) {
-                                setSelectedPerson(
-                                  peopleOptions.find(
-                                    (p) => p.email === value,
-                                  ) ?? null,
-                                );
-                              } else {
-                                setSelectedPerson(null);
-                              }
-                            }}
-                            selectedOptions={
-                              selectedPerson
-                                ? [
-                                    {
-                                      label: `${selectedPerson.fullName ?? selectedPerson.navIdent} (${selectedPerson.email})`,
-                                      value: selectedPerson.email ?? "",
-                                    },
-                                  ]
-                                : []
-                            }
-                          />
-                        </div>
-                        <Button
-                          variant="secondary"
-                          disabled={busy || !selectedPerson}
-                          onClick={() => void addPerson()}
-                        >
-                          Add person
-                        </Button>
-                      </HStack>
-                    </VStack>
-                  </section>
-                </Box>
+                <PersonManager
+                  title="Individuals"
+                  description="Search by name. Matched to Slack via email."
+                  emptyText="Usually not needed when the team group covers it."
+                  people={state.ignoreList}
+                  busy={busy}
+                  options={peopleOptions}
+                  searching={searching}
+                  selected={selectedPerson}
+                  optionLabel={(p) => `${p.fullName ?? p.navIdent} (${p.email})`}
+                  optionValue={(p) => p.email ?? ""}
+                  rowKey={(p) => String(p.id)}
+                  rowTitle={(p) => p.label ?? p.email}
+                  rowSub={(p) => (p.label ? p.email : "")}
+                  onSearch={searchPeople}
+                  onSelect={setSelectedPerson}
+                  onAdd={() => void addPerson()}
+                  onRemove={(p) => void removeIgnore(p.id)}
+                />
               </VStack>
             </section>
+            {/* Access control: which Team Catalog groups may open /admin. */}
+            <VStack gap="space-12" align="start" style={{ width: "100%" }}>
+              <Heading level="3" size="small">
+                Who can admin
+              </Heading>
+              {state.adminBootstrap && (
+                <Alert variant="warning" size="small">
+                  No admin group configured — right now any logged-in Nav user
+                  can change these settings. Add your team to claim the page.
+                </Alert>
+              )}
+              <GroupManager
+                title="Admin groups"
+                description="Members of these groups can open this page and change settings. Membership resolves live from Team Catalog."
+                emptyText="No admin groups yet."
+                groups={state.adminGroups}
+                busy={busy}
+                options={adminGroupOptions}
+                searching={adminGroupSearching}
+                selected={selectedAdminGroup}
+                onSearch={(q) => void searchAdminGroupsFn(q)}
+                onSelect={setSelectedAdminGroup}
+                onAdd={() => {
+                  if (selectedAdminGroup) {
+                    void addGroupTo("/api/admin/admins", selectedAdminGroup, () =>
+                      setSelectedAdminGroup(null),
+                    );
+                  }
+                }}
+                onRemove={(g) => void removeGroupFrom("/api/admin/admins", g)}
+              />
+              <PersonManager
+                title="Admin individuals"
+                description="Search by name. Matched by Nav ident — no email needed."
+                emptyText="Usually not needed when a team group covers it."
+                people={state.adminIdents}
+                busy={busy}
+                options={adminPeopleOptions}
+                searching={adminPeopleSearching}
+                selected={selectedAdminPerson}
+                optionLabel={(p) =>
+                  `${p.fullName ?? p.navIdent}${p.navIdent ? ` (${p.navIdent})` : ""}`
+                }
+                optionValue={(p) => p.navIdent ?? ""}
+                rowKey={(p) => p.nav_ident}
+                rowTitle={(p) => p.label ?? p.nav_ident}
+                rowSub={(p) => (p.label ? p.nav_ident : "")}
+                onSearch={searchAdminPeople}
+                onSelect={setSelectedAdminPerson}
+                onAdd={() => void addAdminPerson()}
+                onRemove={(p) => void removeAdminPerson(p.nav_ident)}
+              />
+            </VStack>
+
             {/* Deliberately low-key: text-level expandable, not a card. */}
             <ExpansionCard aria-label="Debugging" size="small">
               <ExpansionCard.Header>
@@ -876,24 +1141,31 @@ export function AdminClient() {
                     test digest" sends a fake digest to the reminder channel to
                     verify wiring.
                   </BodyShort>
-                  <HStack gap="space-8" wrap>
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      disabled={busy || state.frozen}
-                      onClick={() => void runTestAction("scan")}
-                    >
-                      Run scan now
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      disabled={busy || state.frozen || !state.targetChannelId}
-                      onClick={() => void runTestAction("ping")}
-                    >
-                      Post test digest
-                    </Button>
-                  </HStack>
+                  {state.frozen ? (
+                    <BodyShort textColor="subtle">
+                      Bot is off — turn it on to run a scan or post a test
+                      digest.
+                    </BodyShort>
+                  ) : (
+                    <HStack gap="space-8" wrap>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={() => void runTestAction("scan")}
+                      >
+                        Run scan now
+                      </Button>
+                      {state.targetChannelId && (
+                        <Button
+                          variant="secondary"
+                          size="small"
+                          onClick={() => void runTestAction("ping")}
+                        >
+                          Post test digest
+                        </Button>
+                      )}
+                    </HStack>
+                  )}
                 </VStack>
               </ExpansionCard.Content>
             </ExpansionCard>

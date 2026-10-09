@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getTeamMembers, requireReopsTeamMember, type GroupKind } from "../../../../../lib/auth";
+import { getTeamMembers, requireAdmin, type GroupKind } from "../../../../../lib/auth";
 
 export const runtime = "nodejs";
 
@@ -11,7 +11,7 @@ const TEAMKATALOG_BASE_URL = "https://teamkatalog-api.intern.nav.no";
 
 /** GET ?kind=team|cluster|productarea&id=... → member list (name + email). */
 export async function GET(req: Request): Promise<Response> {
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
   if (auth.status !== "ok") {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });

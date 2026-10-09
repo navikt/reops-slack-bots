@@ -1,6 +1,9 @@
 import { WebClient } from "@slack/web-api";
 import { log, logDebug, logError } from "./log";
 import { getSetting } from "./db";
+import { graceEligibleTs } from "./work-hours";
+
+export { isThreadHandled } from "./thread-handled";
 
 let client: WebClient | null = null;
 
@@ -164,28 +167,37 @@ export interface UnsolvedMessage {
   text: string;
   permalink: string;
   replyCount: number;
-  /** User IDs of the newest replies (up to 3), most recent last. */
-  latestReplyUsers: string[];
+  /** Newest embedded replies (up to 3), oldest first, most recent last. */
+  latestReplies: Array<{
+    user: string | null;
+    ts: number;
+    solved: boolean;
+  }>;
+  /** Parent message carries :solved:. */
+  parentSolved: boolean;
 }
 
 /**
- * Fetches top-level messages in a bounded window:
- * older than `olderThanDays` but younger than `youngerThanHours`.
- * The upper bound keeps the scan cheap (never re-reads full history) and
- * stateless (no cursor to lose on restart); the lower bound gives people a
- * grace period to answer before the bot considers a message "unanswered".
+ * Fetches top-level messages no older than `olderThanDays`, excluding any
+ * still inside their grace period. The window bound keeps the scan cheap
+ * (never re-reads full history) and stateless (no cursor to lose on
+ * restart); the grace filter is work-hours aware (see work-hours.ts), so a
+ * message posted Friday evening is not nagged before Monday morning.
  *
- * Only messages without a :solved: reaction on the parent are returned.
+ * :solved: is NOT filtered here — it is a recency-based handled signal, not
+ * a veto. See isThreadHandled.
  */
 export async function fetchOldUnsolvedMessages(
   channelId: string,
   olderThanDays: number,
-  youngerThanHours: number,
+  graceHours: number,
 ): Promise<UnsolvedMessage[]> {
   const self = await getSelfIdentity();
   const nowS = Date.now() / 1000;
   const oldest = (nowS - olderThanDays * 24 * 60 * 60).toFixed(6);
-  const latest = (nowS - youngerThanHours * 60 * 60).toFixed(6);
+  // Grace is work-hours aware and per-message, so we cannot push it into the
+  // history `latest` bound — fetch the whole window and filter below.
+  const latest = nowS.toFixed(6);
 
   const unsolved: UnsolvedMessage[] = [];
   let cursor: string | undefined;
@@ -205,8 +217,20 @@ export async function fetchOldUnsolvedMessages(
       const botId = (msg as { bot_id?: string }).bot_id;
       if (botId === self.botId || msg.user === self.userId) continue;
 
-      const solved = (msg.reactions ?? []).some((r) => r.name === "solved");
-      if (solved) continue;
+      // Still inside its (work-hours aware) grace period — too fresh to nag.
+      if (graceEligibleTs(msg.ts, graceHours) > nowS) continue;
+
+      // history embeds the 3 newest replies inline — enough to apply the
+      // handled rule without a conversations.replies call. The SDK type
+      // omits latest_replies; it exists on the wire.
+      const latestReplies =
+        (msg as {
+          latest_replies?: Array<{
+            user?: string;
+            ts?: string;
+            reactions?: Array<{ name: string }>;
+          }>;
+        }).latest_replies ?? [];
 
       unsolved.push({
         ts: msg.ts,
@@ -214,14 +238,14 @@ export async function fetchOldUnsolvedMessages(
         text: msg.text ?? "",
         permalink: buildPermalink(channelId, msg.ts),
         replyCount: msg.reply_count ?? 0,
-        // history embeds the 3 newest replies inline — enough to read the
-        // last reply author without a conversations.replies call. The SDK
-        // type omits latest_replies; it exists on the wire.
-        latestReplyUsers: (
-          (msg as { latest_replies?: Array<{ user?: string }> }).latest_replies ?? []
-        )
-          .map((r) => r.user)
-          .filter((u): u is string => Boolean(u)),
+        latestReplies: latestReplies
+          .filter((r) => r.ts)
+          .map((r) => ({
+            user: r.user ?? null,
+            ts: Number.parseFloat(r.ts as string),
+            solved: (r.reactions ?? []).some((x) => x.name === "solved"),
+          })),
+        parentSolved: (msg.reactions ?? []).some((r) => r.name === "solved"),
       });
     }
 
@@ -229,45 +253,6 @@ export async function fetchOldUnsolvedMessages(
   } while (cursor);
 
   return unsolved;
-}
-
-/**
- * Decides whether a thread is already "handled": either the last reply was
- * written by someone on the ignore list (team member), or any message in the
- * thread carries a :solved: reaction. A later reply from a non-team user
- * flips it back to nag-worthy on the next run.
- *
- * Fail-open on API errors: returns false so the message still gets nagged
- * rather than silently dropped.
- */
-export async function isThreadHandled(
-  channelId: string,
-  threadTs: string,
-  ignoreSet: ReadonlySet<string>,
-): Promise<boolean> {
-
-  try {
-    const res = await slackCall("conversations.replies", (web) =>
-      web.conversations.replies({ channel: channelId, ts: threadTs }),
-    );
-    const messages = res.messages ?? [];
-    if (messages.length === 0) return false;
-
-    const hasSolvedReaction = messages.some((m) =>
-      (m.reactions ?? []).some((r) => r.name === "solved"),
-    );
-    if (hasSolvedReaction) return true;
-
-    const last = messages[messages.length - 1];
-    return Boolean(last.user && ignoreSet.has(last.user));
-  } catch (err) {
-    logError({
-      event: "slack.thread_check_failed",
-      ts: threadTs,
-      message: err instanceof Error ? err.message : String(err),
-    });
-    return false;
-  }
 }
 
 /**

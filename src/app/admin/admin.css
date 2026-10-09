@@ -46,7 +46,8 @@
   width: 100%;
 }
 
-@media (min-width: 480px) {
+/* ~700px: 3 fields × ~14rem + gaps. Below this fields stack vertically. */
+@media (min-width: 700px) {
   .fieldRow {
     /* Equal columns so fields (and their inputs) align on a shared grid. */
     grid-template-columns: repeat(auto-fit, minmax(0, 1fr));

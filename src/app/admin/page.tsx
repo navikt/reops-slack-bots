@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { Alert, BodyShort, Heading, Page, VStack } from "@navikt/ds-react";
 import { PageBlock } from "@navikt/ds-react/Page";
-import { requireReopsTeamMember } from "../../lib/auth";
+import { requireAdmin } from "../../lib/auth";
 import { AdminClient } from "./AdminClient";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ export default async function AdminPage() {
   const req = new Request("https://internal/admin", {
     headers: await headers(),
   });
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
 
   return (
     <PageBlock as="main" width="lg" gutters>
@@ -28,7 +28,8 @@ export default async function AdminPage() {
 
           {auth.status === "forbidden" && (
             <Alert variant="error">
-              Team ResearchOps only.
+              Admins only. Ask an existing admin to add your team under
+              &quot;Who can admin&quot;.
             </Alert>
           )}
 

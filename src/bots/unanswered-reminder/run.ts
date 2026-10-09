@@ -18,8 +18,8 @@ import { log, logDebug, logError } from "../../lib/log";
 const DEFAULT_SCAN_WINDOW_DAYS = 14;
 /** Messages younger than this get a grace period before the bot cares. */
 const DEFAULT_MIN_MESSAGE_AGE_HOURS = 1;
-/** Cooldown before a nagged message is eligible for another digest. */
-const DEFAULT_RE_NAG_DAYS = 7;
+/** Cooldown in hours before a nagged message is eligible for another digest. */
+const DEFAULT_RE_NAG_HOURS = 7 * 24;
 
 export async function runUnansweredReminder(): Promise<void> {
   const frozen = (await getSetting("frozen")) ?? "false";
@@ -42,10 +42,10 @@ export async function runUnansweredReminder(): Promise<void> {
     return;
   }
 
-  const reNagRaw = (await getSetting("re_nag_days")) ?? String(DEFAULT_RE_NAG_DAYS);
-  const reNagDays = Number.parseInt(reNagRaw, 10);
-  if (Number.isNaN(reNagDays) || reNagDays < 1) {
-    logError({ event: "bot.bad_setting", key: "re_nag_days", value: reNagRaw });
+  const reNagRaw = (await getSetting("re_nag_hours")) ?? String(DEFAULT_RE_NAG_HOURS);
+  const reNagHours = Number.parseFloat(reNagRaw);
+  if (Number.isNaN(reNagHours) || reNagHours < 0.5) {
+    logError({ event: "bot.bad_setting", key: "re_nag_hours", value: reNagRaw });
     return;
   }
 
@@ -112,47 +112,40 @@ export async function runUnansweredReminder(): Promise<void> {
     }
   }
 
-  // Skip threads already handled: last reply from a team member, or :solved:
-  // anywhere in the thread. Threads without replies are never handled.
-  //
-  // conversations.history embeds the newest replies (latest_replies), so when
-  // the last reply author is present AND not on the ignore list, the thread
-  // is nag-worthy regardless — no conversations.replies call needed. We only
-  // fetch the thread when the last reply came from a team member, to check
-  // whether some other reply carries :solved:.
-  const handled = new Set<string>();
+  // Handled rule (see isThreadHandled): :solved: and team replies are
+  // equal-rank signals, recency decides — re-openable conversations. Runs on
+  // data embedded in conversations.history, so no extra Slack calls.
+  const open: typeof candidates = [];
   for (const m of candidates) {
-    if (m.replyCount === 0) {
-      logDebug({ event: "bot.decision", ts: m.ts, verdict: "candidate", why: "no thread replies" });
-      continue;
-    }
-    const lastReplyUser = m.latestReplyUsers[m.latestReplyUsers.length - 1];
-    if (lastReplyUser && !ignoreSet.has(lastReplyUser)) {
-      logDebug({
-        event: "bot.decision",
-        ts: m.ts,
-        verdict: "candidate",
-        why: "last reply by non-team user",
-        last_reply_user: lastReplyUser,
-      });
-      continue;
-    }
-    if (await isThreadHandled(sourceChannel, m.ts, ignoreSet)) {
+    const lastReplyUser = m.latestReplies[m.latestReplies.length - 1]?.user ?? null;
+    if (isThreadHandled(m, ignoreSet)) {
       logDebug({
         event: "bot.decision",
         ts: m.ts,
         verdict: "skip",
-        why: "thread handled (team reply last, or :solved: in thread)",
-        last_reply_user: lastReplyUser ?? null,
+        why: "handled (team reply last, or :solved: newer than last non-team activity)",
+        last_reply_user: lastReplyUser,
       });
-      handled.add(m.ts);
+      continue;
     }
+    logDebug({
+      event: "bot.decision",
+      ts: m.ts,
+      verdict: "candidate",
+      why:
+        m.replyCount === 0
+          ? "no thread replies"
+          : lastReplyUser
+            ? "last activity by non-team user, no newer :solved:"
+            : "last reply author unknown",
+      last_reply_user: lastReplyUser,
+    });
+    open.push(m);
   }
-  const open = candidates.filter((m) => !handled.has(m.ts));
 
   const recentlyNagged = await getRecentlyNaggedTs(
     open.map((m) => m.ts),
-    reNagDays,
+    reNagHours,
   );
 
   const toNag = open.filter((m) => !recentlyNagged.has(m.ts));
@@ -173,7 +166,7 @@ export async function runUnansweredReminder(): Promise<void> {
     after_thread_check: open.length,
     to_nag: toNag.length,
     scan_window_days: scanWindowDays,
-    re_nag_days: reNagDays,
+    re_nag_hours: reNagHours,
   });
 
   await setSetting(

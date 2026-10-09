@@ -5,9 +5,17 @@ import { PageBlock } from "@navikt/ds-react/Page";
 import { ListItem } from "@navikt/ds-react/List";
 import { getSetting } from "../lib/db";
 import { listJoinedChannels } from "../lib/slack";
-import { requireReopsTeamMember } from "../lib/auth";
+import { requireAdmin } from "../lib/auth";
 
 export const dynamic = "force-dynamic";
+
+/** "30 minutes" / "1 hour" / "3 hours" / "1 day" / "7 days" from an hour count. */
+function formatHours(hours: number): string {
+  if (hours < 1) return `${Math.round(hours * 60)} minutes`;
+  if (hours < 24) return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = hours / 24;
+  return `${days} ${days === 1 ? "day" : "days"}`;
+}
 
 function channelName(
   channels: Awaited<ReturnType<typeof listJoinedChannels>>,
@@ -20,27 +28,30 @@ function channelName(
 
 export default async function HomePage() {
   const req = new Request("https://internal/", { headers: await headers() });
-  const auth = await requireReopsTeamMember(req);
+  const auth = await requireAdmin(req);
 
   // Info page is public (internal ingress); failures just degrade the detail level.
   let channels: Awaited<ReturnType<typeof listJoinedChannels>> = [];
   let sourceChannelId: string | null = null;
   let targetChannelId: string | null = null;
-  let scanWindowDays = "14";
+  let scanWindowDays = 14;
+  let graceHours = 1;
+  let reNagHours = 168;
   let frozen = false;
   try {
-    let frozenRaw: string | null;
-    [sourceChannelId, targetChannelId, scanWindowDays, frozenRaw] = await Promise.all([
+    const [s, t, sw, gh, rh, frozenRaw] = await Promise.all([
       getSetting("unanswered_reminder.source_channel_id"),
       getSetting("unanswered_reminder.target_channel_id"),
       getSetting("scan_window_days"),
+      getSetting("min_age_hours"),
+      getSetting("re_nag_hours"),
       getSetting("frozen"),
-    ]).then(([s, t, f, fr]): [string | null, string | null, string, string | null] => [
-      s,
-      t,
-      f ?? "14",
-      fr,
     ]);
+    sourceChannelId = s;
+    targetChannelId = t;
+    scanWindowDays = Number.parseInt(sw ?? "14", 10) || 14;
+    graceHours = Number.parseInt(gh ?? "1", 10) || 0;
+    reNagHours = Number.parseFloat(rh ?? "168") || 168;
     frozen = frozenRaw === "true";
     if (!frozen) {
       channels = await listJoinedChannels();
@@ -75,17 +86,30 @@ export default async function HomePage() {
             Unanswered messages
           </Heading>
           <BodyLong>
-            Hourly, the bot checks {source ? <strong>{source}</strong> : "the chosen channel"}{" "}
-            for messages unanswered for over an hour. Hits are collected into a
-            digest {target ? <>in <strong>{target}</strong></> : "in the reminder channel"} —
-            a link per message, which Slack expands into a preview. Answered means:
+            On a regular schedule, the bot checks{" "}
+            {source ? <strong>{source}</strong> : "the chosen channel"} for messages
+            still awaiting an answer after a grace period of {formatHours(graceHours)} of
+            work time (Mon–Fri 09:00–16:30 — an evening post becomes due the next
+            workday morning). Hits are collected into a digest{" "}
+            {target ? <>in <strong>{target}</strong></> : "in the reminder channel"} —
+            a link per message, which Slack expands into a preview. A message counts
+            as answered when:
           </BodyLong>
           <List>
-            <ListItem>a :solved: reaction exists, or</ListItem>
+            <ListItem>
+              a :solved: reaction marks it handled — on the original message or any
+              thread reply, set by team or asker, or
+            </ListItem>
             <ListItem>a team member wrote the last thread reply.</ListItem>
           </List>
           <BodyLong>
-            Messages older than {scanWindowDays || "14"} days are ignored.
+            Both are recency-based: a follow-up question from a non-team member
+            re-opens the thread, and it is marked handled again by re-adding :solved:
+            or replying.
+          </BodyLong>
+          <BodyLong>
+            Unanswered messages re-appear in the digest every {formatHours(reNagHours)}{" "}
+            until handled, and are ignored once older than {scanWindowDays} days.
           </BodyLong>
 
           <Heading level="2" size="medium">
@@ -93,8 +117,8 @@ export default async function HomePage() {
           </Heading>
           <List>
             <ListItem>
-              Solved? Add :solved: on the original message — or just reply in
-              the thread.
+              Answered? Reply in the thread, or add :solved: to the message — both
+              mark it handled until someone asks a follow-up.
             </ListItem>
             <ListItem>
               Add the bot to a channel: <code>/invite @reops</code>.

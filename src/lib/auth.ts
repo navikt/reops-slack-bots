@@ -1,12 +1,6 @@
 import { getToken, validateToken, parseAzureUserToken } from "@navikt/oasis";
 import { log, logError } from "./log";
-
-/**
- * Team ResearchOps' id in Team Catalog (teamkatalog.nav.no).
- * Membership is looked up live via Team Catalog instead of hardcoding
- * nav-idents. Find it via: https://teamkatalog.nav.no/team/<team-id>
- */
-export const REOPS_TEAM_KATALOG_ID = "26dba481-fd96-40a8-b47d-b1ad0002bc74";
+import { listAdminGroups, listAdminIdents } from "./db";
 
 /**
  * Stable, single Team Catalog instance — Nav only has one real one
@@ -177,13 +171,19 @@ export async function getTeamMembership(navIdent: string): Promise<TeamCatalogTe
 }
 
 /**
+ * Admin gate for /admin and /api/admin/*.
+ *
+ * The admin set is the union of members of the Team Catalog groups in the
+ * `admin_groups` table — configured from the admin UI itself, not hardcoded.
+ * Bootstrap: when no admin groups are configured yet, any logged-in Nav user
+ * passes (first-come-first-served; the first visitor claims the page by
+ * adding their team).
+ *
  * Port of innblikk-frontend's authenticateUser + requireReopsTeamMember,
  * adapted to Next.js route handlers (Request instead of Express req).
- *
- * Fail-closed: if Team Catalog is unreachable, returns "unavailable" (503)
- * rather than letting the request through.
+ * Fail-closed: if Team Catalog is unreachable, returns "unavailable" (503).
  */
-export async function requireReopsTeamMember(req: Request): Promise<TeamCheckResult> {
+export async function requireAdmin(req: Request): Promise<TeamCheckResult> {
   try {
     // Local-dev escape hatch: skips Azure token + Team Catalog entirely.
     // Hard-gated on NODE_ENV so it can never fire in the deployed app.
@@ -196,6 +196,7 @@ export async function requireReopsTeamMember(req: Request): Promise<TeamCheckRes
 
     const token = getToken(req);
     if (!token) {
+      log({ event: "auth.no_token" });
       return { status: "unauthenticated" };
     }
 
@@ -204,6 +205,19 @@ export async function requireReopsTeamMember(req: Request): Promise<TeamCheckRes
       log({ event: "auth.invalid_token", message: validation.error?.message });
       return { status: "unauthenticated" };
     }
+
+    // oasis parseAzureUserToken hard-fails when NAVident is missing, but
+    // Azure claim names have drifted before — log the payload shape so a
+    // deployed "Not logged in" is debuggable from pod logs. Claims contain
+    // no secrets beyond name/ident, but we log keys + types only.
+    const claims = JSON.parse(
+      Buffer.from(token.split(".")[1], "base64url").toString(),
+    ) as Record<string, unknown>;
+    log({
+      event: "auth.claims",
+      keys: Object.keys(claims).sort().join(","),
+      navident_type: typeof claims.NAVident,
+    });
 
     const parsed = parseAzureUserToken(token);
     if (!parsed.ok) {
@@ -221,12 +235,27 @@ export async function requireReopsTeamMember(req: Request): Promise<TeamCheckRes
       return { status: "unauthenticated" };
     }
 
+    const [adminGroups, adminIdents] = await Promise.all([
+      listAdminGroups(),
+      listAdminIdents(),
+    ]);
+    if (adminGroups.length === 0 && adminIdents.length === 0) {
+      // Bootstrap: nobody has claimed /admin yet.
+      log({ event: "auth.bootstrap_admin", navIdent: user.navIdent });
+      return { status: "ok", user };
+    }
+
+    if (adminIdents.some((a) => a.nav_ident === user.navIdent)) {
+      return { status: "ok", user };
+    }
+
     const teams = await getTeamMembership(user.navIdent);
-    const isMember = teams.some((t) => t.id === REOPS_TEAM_KATALOG_ID);
+    const wanted = new Set(adminGroups.map((g) => g.id));
+    const isMember = teams.some((t) => wanted.has(t.id));
 
     if (!isMember) {
       log({
-        event: "auth.not_team_member",
+        event: "auth.not_admin",
         navIdent: user.navIdent,
         teamIds: teams.map((t) => t.id).join(","),
       });
@@ -237,7 +266,7 @@ export async function requireReopsTeamMember(req: Request): Promise<TeamCheckRes
   } catch (err) {
     // Fail closed: Team Catalog unreachable (or oasis threw) — deny access.
     logError({
-      event: "auth.team_check_failed",
+      event: "auth.admin_check_failed",
       message: err instanceof Error ? err.message : String(err),
     });
     return { status: "unavailable" };

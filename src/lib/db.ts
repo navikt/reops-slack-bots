@@ -156,16 +156,61 @@ export async function removeGroup(id: string, kind: string): Promise<boolean> {
   return (res.rowCount ?? 0) > 0;
 }
 
+// ── Admin groups (Team Catalog groups whose members may use /admin) ──────────
+
+export async function listAdminGroups(): Promise<GroupRow[]> {
+  const res = await query<GroupRow>("SELECT id, kind, label FROM admin_groups ORDER BY label ASC");
+  return res.rows;
+}
+
+export async function addAdminGroup(id: string, kind: GroupRow["kind"], label: string): Promise<void> {
+  await query(
+    "INSERT INTO admin_groups (id, kind, label) VALUES ($1, $2, $3) ON CONFLICT (id, kind) DO NOTHING",
+    [id, kind, label],
+  );
+}
+
+export async function removeAdminGroup(id: string, kind: string): Promise<boolean> {
+  const res = await query("DELETE FROM admin_groups WHERE id = $1 AND kind = $2", [id, kind]);
+  return (res.rowCount ?? 0) > 0;
+}
+
+// ── Admin individuals (nav-ident based) ─────────────────────────────────────
+
+export interface AdminIdentRow {
+  nav_ident: string;
+  label: string | null;
+}
+
+export async function listAdminIdents(): Promise<AdminIdentRow[]> {
+  const res = await query<AdminIdentRow>(
+    "SELECT nav_ident, label FROM admin_idents ORDER BY label ASC NULLS LAST, nav_ident ASC",
+  );
+  return res.rows;
+}
+
+export async function addAdminIdent(navIdent: string, label: string | null): Promise<void> {
+  await query(
+    "INSERT INTO admin_idents (nav_ident, label) VALUES ($1, $2) ON CONFLICT (nav_ident) DO NOTHING",
+    [navIdent, label],
+  );
+}
+
+export async function removeAdminIdent(navIdent: string): Promise<boolean> {
+  const res = await query("DELETE FROM admin_idents WHERE nav_ident = $1", [navIdent]);
+  return (res.rowCount ?? 0) > 0;
+}
+
 export async function getRecentlyNaggedTs(
   messageTss: string[],
-  frequencyDays: number,
+  cooldownHours: number,
 ): Promise<Set<string>> {
   if (messageTss.length === 0) return new Set();
   const res = await query<{ message_ts: string }>(
     `SELECT message_ts FROM nag_log
      WHERE message_ts = ANY($1::text[])
-       AND last_nagged_at > now() - ($2 || ' days')::interval`,
-    [messageTss, String(frequencyDays)],
+       AND last_nagged_at > now() - ($2 || ' hours')::interval`,
+    [messageTss, String(cooldownHours)],
   );
   return new Set(res.rows.map((r) => r.message_ts));
 }
