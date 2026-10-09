@@ -1,32 +1,51 @@
 import { Pool, type QueryResult, type QueryResultRow } from "pg";
 import { readdir, readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { log } from "./log";
 
 let pool: Pool | null = null;
 
-function jdbcToPgUrl(jdbcUrl: string): string {
-  // Nais injects a JDBC URL (jdbc:postgresql://host:5432/db?sslmode=...).
-  // pg expects postgres:// — strip the jdbc: prefix and JDBC-only params.
-  let url = jdbcUrl.replace(/^jdbc:/, "");
-  url = url.replace(/([?&])(sslmode|sslfactory|ApplicationName|loggerLevel)=[^&]*/g, "$1");
-  url = url.replace(/[?&]+$/, "").replace(/\?&/, "?");
-  return url;
+/**
+ * Connection config. On Nais we get NAIS_DATABASE_<APP>_<DB>_* injected:
+ * _URL is a ready postgresql:// string, and the instance requires
+ * verify-ca with the mounted sqeletor certs (paths in _SSLROOTCERT/_SSLKEY_PK8
+ * — pg needs the PKCS#8/DER key, hence _PK8). Locally, fall back to a plain
+ * postgres:// DATABASE_URL from .env.local. The JDBC URL variant Nais also
+ * injects is NOT usable by pg (JDBC syntax + sslmode).
+ */
+function connectionConfig(): Record<string, unknown> {
+  const prefix = "NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS";
+  const naisUrl = process.env[`${prefix}_URL`];
+  if (naisUrl) {
+    const sslRootCert = process.env[`${prefix}_SSLROOTCERT`];
+    const sslKey = process.env[`${prefix}_SSLKEY_PK8`];
+    const sslCert = process.env[`${prefix}_SSLCERT`];
+    return {
+      connectionString: naisUrl.split("?")[0],
+      ssl:
+        sslRootCert && sslKey && sslCert
+          ? {
+              rejectUnauthorized: true,
+              ca: readFileSync(sslRootCert, "utf-8"),
+              key: readFileSync(sslKey),
+              cert: readFileSync(sslCert, "utf-8"),
+            }
+          : false,
+    };
+  }
+
+  const rawUrl = process.env.DATABASE_URL;
+  if (!rawUrl) throw new Error("DATABASE_URL is not set");
+  return { connectionString: rawUrl };
 }
 
 export function getPool(): Pool {
   if (pool) return pool;
 
-  const rawUrl = process.env.DATABASE_URL;
-  if (!rawUrl) {
-    throw new Error("DATABASE_URL is not set");
-  }
-  const connectionString = rawUrl.startsWith("jdbc:") ? jdbcToPgUrl(rawUrl) : rawUrl;
-
   pool = new Pool({
-    connectionString,
+    ...connectionConfig(),
     max: 5,
-    ssl: process.env.DATABASE_SSL === "false" ? false : undefined,
   });
 
   pool.on("error", (err) => {

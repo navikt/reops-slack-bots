@@ -7,8 +7,8 @@ import { startJob, type BotJob } from "./src/lib/runner";
  * Runs DB migrations, then registers and starts all bot jobs.
  */
 export async function startServer(): Promise<void> {
-  if (!process.env.DATABASE_URL) {
-    logError({ event: "server.no_database_url", message: "Bot jobs disabled (DATABASE_URL not set)" });
+  if (!process.env.DATABASE_URL && !process.env.NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_URL) {
+    logError({ event: "server.no_database_url", message: "Bot jobs disabled (no database env)" });
     return;
   }
 

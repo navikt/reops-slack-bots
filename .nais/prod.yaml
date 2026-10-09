@@ -60,5 +60,3 @@ spec:
   env:
     - name: ENVIRONMENT
       value: production
-    - name: DATABASE_URL
-      value: "$(NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_JDBC_URL)"

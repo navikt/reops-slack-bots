@@ -80,14 +80,16 @@ Required bot token scopes:
 |---|---|
 | `SLACK_BOT_TOKEN` | Bot User OAuth Token (`xoxb-…`) |
 | `SLACK_SIGNING_SECRET` | Slack app signing secret (only needed if interactivity is re-added) |
-| `DATABASE_URL` | Postgres connection string (injected by Nais) |
+| `DATABASE_URL` | Postgres connection string (local dev; on Nais the `NAIS_DATABASE_*` vars win) |
 | `RESEARCHOPS_CHANNEL_ID` | Fallback channel to scan (admin UI setting wins) |
 | `RESEARCHOPS_INTERN_CHANNEL_ID` | Fallback reminder channel (admin UI setting wins) |
 | `SLACK_WORKSPACE_SUBDOMAIN` | Workspace subdomain for permalink building (default `nav`) |
 | `ADMIN_DEV_BYPASS` | `true` skips auth on `/admin` — hard-gated to `NODE_ENV !== "production"`, local dev only |
 
-On Nais, the first two live in the `reops-slack-bots` secret; `DATABASE_URL`
-is injected from the `slackbots` database on the app's SQL instance.
+On Nais, the first two live in the `reops-slack-bots` secret; the database
+connection comes from the injected `NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_*`
+vars (URL + mounted sqeletor certs, verify-ca) — the JDBC URL variant is not
+usable by `pg` and is deliberately not wired in.
 
 ## Local development
 
