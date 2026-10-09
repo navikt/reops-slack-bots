@@ -28,22 +28,6 @@ jobs:
     outputs:
       image: ${{ steps.docker-build-push.outputs.image }}
 
-  deploy-dev:
-    name: Deploy to dev-gcp
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nais/deploy/actions/deploy@v2
-        env:
-          CLUSTER: dev-gcp
-          RESOURCE: .nais/dev.yaml
-          VAR: image=${{ needs.build.outputs.image }}
-          PRINT_PAYLOAD: true
-
   deploy-prod:
     name: Deploy to prod-gcp
     needs: build
