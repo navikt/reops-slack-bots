@@ -33,6 +33,12 @@ Next.js app on Nais (GCP), Postgres for settings/ignore-list/nag-log.
 Cron-on-boot pattern: `instrumentation.ts` calls `server.ts` on process start,
 which runs migrations (`src/lib/migrations/*.sql`, tracked in
 `schema_migrations`) and starts interval jobs (`src/lib/runner.ts`).
+Migration failure is fatal (process exits — a half-started app serving
+"relation does not exist" is worse than a crash loop), and readiness
+(`isready`) 503s until migrations complete. Note: the standalone Next.js
+build only includes traced files — the migration `.sql` files are read at
+runtime via `readdir`, so the Dockerfile copies `src/lib/migrations/`
+explicitly. Don't remove that COPY line.
 The unanswered-reminder job wakes hourly; whether a message is due
 for a (re-)nag is driven by the `scan_window_days` / `min_age_hours` /
 `re_nag_hours` rows in `settings`. Grace-period math lives in

@@ -2,11 +2,19 @@ import { runMigrations } from "./src/lib/db";
 import { log, logError } from "./src/lib/log";
 import { startJob, type BotJob } from "./src/lib/runner";
 
+let started = false;
+
 /**
- * Called once at server startup via instrumentation.ts.
- * Runs DB migrations, then registers and starts all bot jobs.
+ * Idempotent server startup: runs DB migrations, then registers and starts
+ * all bot jobs. Called from instrumentation.ts's register() — but Next's
+ * standalone build does NOT reliably invoke register(), so it is also called
+ * from the root layout on first request. The `started` guard makes repeat
+ * calls no-ops.
  */
 export async function startServer(): Promise<void> {
+  if (started) return;
+  started = true;
+
   if (!process.env.DATABASE_URL && !process.env.NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_URL) {
     logError({ event: "server.no_database_url", message: "Bot jobs disabled (no database env)" });
     return;
