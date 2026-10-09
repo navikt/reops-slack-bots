@@ -30,6 +30,9 @@ spec:
       enabled: true
       allowAllUsers: true
       tenant: nav.no
+    sidecar:
+      enabled: true
+      autoLogin: true
   gcp:
     sqlInstances:
       - type: POSTGRES_18
