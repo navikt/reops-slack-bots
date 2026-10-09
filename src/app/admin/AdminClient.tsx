@@ -13,10 +13,12 @@ import {
   Loader,
   Select,
   Switch,
+  Table,
   VStack,
 } from "@navikt/ds-react";
 import { TrashIcon } from "@navikt/aksel-icons";
 import { UNSAFE_Combobox as Combobox } from "@navikt/ds-react";
+import "./admin.css";
 
 interface IgnoreEntry {
   id: number;
@@ -68,6 +70,7 @@ interface AdminState {
   frozen: boolean;
   scanWindowDays: number;
   minAgeHours: number;
+  reNagDays: number;
   ignoreList: IgnoreEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
@@ -77,7 +80,7 @@ interface AdminState {
   groups: GroupEntry[];
 }
 
-function GroupRow({
+function GroupTableRow({
   group,
   busy,
   onRemove,
@@ -105,60 +108,55 @@ function GroupRow({
   };
 
   return (
-    <ExpansionCard
-      aria-label={group.label}
-      size="small"
-      style={{ width: "100%" }}
-      onToggle={(open) => {
+    <Table.ExpandableRow
+      togglePlacement="left"
+      onOpenChange={(open) => {
         if (open && members === null) void loadMembers();
       }}
+      content={
+        loading || members === null ? (
+          <Loader size="small" />
+        ) : (
+          <List size="small">
+            {members.map((m) => (
+              <List.Item key={m.email ?? m.navIdent}>
+                {m.fullName ?? m.navIdent} {m.email ? `(${m.email})` : ""}
+              </List.Item>
+            ))}
+          </List>
+        )
+      }
     >
-      <ExpansionCard.Header>
-        <HStack
-          justify="space-between"
-          align="center"
-          style={{ width: "100%" }}
-          wrap={false}
-          gap="space-16"
-        >
-          <VStack gap="space-0" style={{ minWidth: 0 }}>
-            <ExpansionCard.Title size="small">{group.label}</ExpansionCard.Title>
-            <ExpansionCard.Description>
-              {group.kind}
-              {group.memberCount !== null ? ` · ${group.memberCount} members` : ""}
-              {group.error ? ` · member count unavailable` : ""}
-            </ExpansionCard.Description>
-          </VStack>
-          <Button
-            variant="tertiary"
-            data-color="danger"
-            icon={<TrashIcon aria-hidden />}
-            title={`Remove ${group.label}`}
-            disabled={busy}
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove();
-            }}
-          >
-            Remove
-          </Button>
-        </HStack>
-      </ExpansionCard.Header>
-      <ExpansionCard.Content>
-        <div style={{ maxWidth: "100%", overflowWrap: "anywhere" }}>
-          {loading && <Loader size="small" />}
-          {members && (
-            <List size="small">
-              {members.map((m) => (
-                <List.Item key={m.email ?? m.navIdent}>
-                  {m.fullName ?? m.navIdent} {m.email ? `(${m.email})` : ""}
-                </List.Item>
-              ))}
-            </List>
-          )}
-        </div>
-      </ExpansionCard.Content>
-    </ExpansionCard>
+      <Table.HeaderCell scope="row" className="tableCell">
+        {group.label}
+      </Table.HeaderCell>
+      <Table.DataCell
+        textSize="small"
+        className="tableCell tableCellSubtle"
+        title={
+          group.kind +
+          (group.memberCount !== null ? ` · ${group.memberCount} members` : "")
+        }
+      >
+        {group.kind}
+        {group.memberCount !== null
+          ? ` · ${group.memberCount} members`
+          : group.error
+            ? " · member count unavailable"
+            : ""}
+      </Table.DataCell>
+      <Table.DataCell align="right" className="tableCellAction">
+        <Button
+          variant="tertiary"
+          data-color="danger"
+          size="small"
+          icon={<TrashIcon aria-hidden />}
+          title={`Remove ${group.label}`}
+          disabled={busy}
+          onClick={onRemove}
+        />
+      </Table.DataCell>
+    </Table.ExpandableRow>
   );
 }
 
@@ -205,6 +203,7 @@ export function AdminClient() {
     frozen?: boolean;
     scanWindowDays?: number;
     minAgeHours?: number;
+    reNagDays?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   }) => {
@@ -236,7 +235,9 @@ export function AdminClient() {
     }
     setSearching(true);
     try {
-      const res = await fetch(`/api/admin/people?q=${encodeURIComponent(query)}`);
+      const res = await fetch(
+        `/api/admin/people?q=${encodeURIComponent(query)}`,
+      );
       if (!res.ok) return;
       const data = (await res.json()) as { people: PersonHit[] };
       setPeopleOptions(data.people.filter((p) => p.email));
@@ -280,7 +281,9 @@ export function AdminClient() {
     }
     setGroupSearching(true);
     try {
-      const res = await fetch(`/api/admin/groups?q=${encodeURIComponent(query)}`);
+      const res = await fetch(
+        `/api/admin/groups?q=${encodeURIComponent(query)}`,
+      );
       if (!res.ok) return;
       const data = (await res.json()) as { groups: GroupOption[] };
       setGroupOptions(data.groups);
@@ -300,7 +303,9 @@ export function AdminClient() {
         body: JSON.stringify(selectedGroup),
       });
       if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         setActionError(data?.error ?? `Could not add group (${res.status})`);
         return;
       }
@@ -402,10 +407,7 @@ export function AdminClient() {
             <Heading level="2" size="medium" spacing>
               Bot on/off
             </Heading>
-            <BodyShort>
-              Off = zero Slack calls (no job, no buttons). Anyone on the team
-              can flip this. No deploy needed.
-            </BodyShort>
+            <BodyShort>Off = zero Slack messages from bot.</BodyShort>
             <Switch
               checked={!state.frozen}
               disabled={busy}
@@ -438,8 +440,43 @@ export function AdminClient() {
                 Unanswered messages
               </Heading>
               <BodyShort>
-                Hourly scan for messages without :solved:. Posts a reminder with
-                a "Mark as solved" button.
+                Hourly scan for messages without :solved:. Posts one digest with
+                a link per message — Slack expands the links into previews.
+              </BodyShort>
+            </VStack>
+
+            {/* Read-only: text straight on the gray, no card. */}
+            <VStack gap="space-4" align="start">
+              <Heading level="3" size="small">
+                Status
+              </Heading>
+              <BodyShort textColor="subtle">
+                {state.lastScan ? (
+                  <>
+                    Last check:{" "}
+                    {new Date(state.lastScan.at).toLocaleString("en-GB", {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                    . Found {state.lastScan.unsolved} unanswered,{" "}
+                    {state.lastScan.nagged > 0
+                      ? `posted a digest with ${state.lastScan.nagged}.`
+                      : "posted nothing."}{" "}
+                    Runs hourly.
+                  </>
+                ) : (
+                  "No check yet. First run starts within an hour of boot."
+                )}
+              </BodyShort>
+            </VStack>
+
+            {/* Input sections get white cards; this title groups them. */}
+            <VStack gap="space-4" align="start">
+              <Heading level="3" size="small">
+                Settings
+              </Heading>
+              <BodyShort textColor="subtle">
+                When and where the scan runs.
               </BodyShort>
             </VStack>
 
@@ -454,24 +491,67 @@ export function AdminClient() {
             >
               <section>
                 <VStack gap="space-12" align="start">
-                  <Heading level="3" size="small" spacing>
-                    Status
+                  <Heading level="4" size="xsmall" spacing>
+                    Timing
                   </Heading>
-                  {state.lastScan ? (
-                    <BodyShort>
-                      Last check:{" "}
-                      {new Date(state.lastScan.at).toLocaleString("en-GB", {
-                        dateStyle: "short",
-                        timeStyle: "short",
-                      })}
-                      . Found {state.lastScan.unsolved} unanswered, sent{" "}
-                      {state.lastScan.nagged} reminders. Runs hourly.
-                    </BodyShort>
-                  ) : (
-                    <BodyShort>
-                      No check yet. First run starts within an hour of boot.
-                    </BodyShort>
-                  )}
+                  <div className="fieldRow">
+                    <Select
+                      label="Scan window"
+                      description="Ignore messages older than this."
+                      value={String(state.scanWindowDays)}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          scanWindowDays: Number(e.target.value),
+                        })
+                      }
+                      style={{ width: "100%" }}
+                    >
+                      {[1, 2, 3, 5, 7, 10, 14, 21, 30].map((d) => (
+                        <option key={d} value={d}>
+                          {d} {d === 1 ? "day" : "days"}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Grace period"
+                      description="Wait this long before a message counts as unanswered."
+                      value={String(state.minAgeHours)}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          minAgeHours: Number(e.target.value),
+                        })
+                      }
+                      style={{ width: "100%" }}
+                    >
+                      {[0, 1, 2, 4, 8, 24].map((h) => (
+                        <option key={h} value={h}>
+                          {h === 0
+                            ? "None"
+                            : `${h} ${h === 1 ? "hour" : "hours"}`}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Re-remind after"
+                      description="Cooldown before a message appears in the digest again."
+                      value={String(state.reNagDays)}
+                      disabled={busy}
+                      onChange={(e) =>
+                        void saveSettings({
+                          reNagDays: Number(e.target.value),
+                        })
+                      }
+                      style={{ width: "100%" }}
+                    >
+                      {[1, 2, 3, 5, 7, 14].map((d) => (
+                        <option key={d} value={d}>
+                          {d} {d === 1 ? "day" : "days"}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
                 </VStack>
               </section>
             </Box>
@@ -487,7 +567,7 @@ export function AdminClient() {
             >
               <section>
                 <VStack gap="space-12" align="start">
-                  <Heading level="3" size="small" spacing>
+                  <Heading level="4" size="xsmall" spacing>
                     Channels
                   </Heading>
                   <BodyShort>
@@ -499,7 +579,7 @@ export function AdminClient() {
                       SLACK_BOT_TOKEN set?
                     </Alert>
                   )}
-                  <HStack gap="space-16" align="start" wrap>
+                  <div className="fieldRow">
                     <Select
                       label="Channel to monitor"
                       description="Checked for answers"
@@ -510,7 +590,7 @@ export function AdminClient() {
                           sourceChannelId: e.target.value || null,
                         })
                       }
-                      style={{ width: "18rem" }}
+                      style={{ width: "100%" }}
                     >
                       <option value="">Not selected</option>
                       {state.channels.map((ch) => (
@@ -530,7 +610,7 @@ export function AdminClient() {
                           targetChannelId: e.target.value || null,
                         })
                       }
-                      style={{ width: "18rem" }}
+                      style={{ width: "100%" }}
                     >
                       <option value="">Not selected</option>
                       {state.channels.map((ch) => (
@@ -540,315 +620,283 @@ export function AdminClient() {
                         </option>
                       ))}
                     </Select>
-                  </HStack>
+                  </div>
                 </VStack>
               </section>
             </Box>
 
-            <Box
-              asChild
-              background="raised"
-              borderWidth="1"
-              borderColor="neutral-subtle"
-              borderRadius="12"
-              padding="space-24"
-              style={{ width: "100%" }}
-            >
-              <section>
-                <VStack gap="space-16" align="start">
-                  <Heading level="3" size="small" spacing>
-                    Settings
+            <section style={{ width: "100%" }}>
+              <VStack gap="space-16" align="start" style={{ width: "100%" }}>
+                <VStack gap="space-4" align="start">
+                  <Heading level="3" size="small">
+                    Who gets ignored
                   </Heading>
-                  <HStack gap="space-16" align="start" wrap>
-                    <Select
-                      label="Scan window"
-                      description="Ignore messages older than this. Also the cooldown before re-reminding."
-                      value={String(state.scanWindowDays)}
-                      disabled={busy}
-                      onChange={(e) =>
-                        void saveSettings({
-                          scanWindowDays: Number(e.target.value),
-                        })
-                      }
-                      style={{ width: "14rem" }}
+                  <BodyShort textColor="subtle">
+                    Messages from these people never trigger reminders. A thread
+                    counts as handled when one of them wrote the last reply.
+                  </BodyShort>
+                </VStack>
+
+                <Box
+                  background="raised"
+                  borderWidth="1"
+                  borderColor="neutral-subtle"
+                  borderRadius="12"
+                  padding="space-24"
+                  style={{ width: "100%" }}
+                  asChild
+                >
+                  <section aria-label="Groups">
+                    <VStack
+                      gap="space-12"
+                      align="start"
+                      style={{ width: "100%" }}
                     >
-                      {[1, 2, 3, 5, 7, 10, 14, 21, 30].map((d) => (
-                        <option key={d} value={d}>
-                          {d} {d === 1 ? "day" : "days"}
-                        </option>
-                      ))}
-                    </Select>
-                    <Select
-                      label="Grace period"
-                      description="Wait this long before a message counts as unanswered."
-                      value={String(state.minAgeHours)}
-                      disabled={busy}
-                      onChange={(e) =>
-                        void saveSettings({
-                          minAgeHours: Number(e.target.value),
-                        })
-                      }
-                      style={{ width: "14rem" }}
+                      <Heading level="4" size="xsmall">
+                        Groups
+                      </Heading>
+                      {state.groups.length === 0 ? (
+                        <BodyShort textColor="subtle">
+                          No groups yet. Add the team to cover everyone at once.
+                        </BodyShort>
+                      ) : (
+                        <Table size="small">
+                          <Table.Body>
+                            {state.groups.map((g) => (
+                              <GroupTableRow
+                                key={`${g.kind}:${g.id}`}
+                                group={g}
+                                busy={busy}
+                                onRemove={() => void removeGroupFn(g)}
+                              />
+                            ))}
+                          </Table.Body>
+                        </Table>
+                      )}
+                      {/* List and add-form are two visual groups — extra air between. */}
+                      <HStack
+                        gap="space-12"
+                        align="end"
+                        wrap
+                        className="addFormRow"
+                      >
+                        <div style={{ width: "24rem", maxWidth: "100%" }}>
+                          <Combobox
+                            label="Add group"
+                            description="Team, cluster or seksjon from Team Catalog. Min 3 chars."
+                            options={groupOptions.map((g) => ({
+                              label: `${g.label} (${g.kind})`,
+                              value: `${g.kind}:${g.id}`,
+                            }))}
+                            filteredOptions={groupOptions.map((g) => ({
+                              label: `${g.label} (${g.kind})`,
+                              value: `${g.kind}:${g.id}`,
+                            }))}
+                            isLoading={groupSearching}
+                            shouldAutocomplete={false}
+                            onChange={(v) => {
+                              const q =
+                                v && typeof v === "object" && "target" in v
+                                  ? (v as React.ChangeEvent<HTMLInputElement>)
+                                      .target.value
+                                  : String(v ?? "");
+                              void searchGroupsFn(q);
+                            }}
+                            onToggleSelected={(value, selected) => {
+                              if (selected) {
+                                setSelectedGroup(
+                                  groupOptions.find(
+                                    (g) => `${g.kind}:${g.id}` === value,
+                                  ) ?? null,
+                                );
+                              } else {
+                                setSelectedGroup(null);
+                              }
+                            }}
+                            selectedOptions={
+                              selectedGroup
+                                ? [
+                                    {
+                                      label: `${selectedGroup.label} (${selectedGroup.kind})`,
+                                      value: `${selectedGroup.kind}:${selectedGroup.id}`,
+                                    },
+                                  ]
+                                : []
+                            }
+                          />
+                        </div>
+                        <Button
+                          variant="secondary"
+                          disabled={busy || !selectedGroup}
+                          onClick={() => void addGroupFn()}
+                        >
+                          Add group
+                        </Button>
+                      </HStack>
+                    </VStack>
+                  </section>
+                </Box>
+
+                <Box
+                  background="raised"
+                  borderWidth="1"
+                  borderColor="neutral-subtle"
+                  borderRadius="12"
+                  padding="space-24"
+                  style={{ width: "100%" }}
+                  asChild
+                >
+                  <section aria-label="Individuals">
+                    <VStack
+                      gap="space-12"
+                      align="start"
+                      style={{ width: "100%" }}
                     >
-                      {[0, 1, 2, 4, 8, 24].map((h) => (
-                        <option key={h} value={h}>
-                          {h === 0 ? "None" : `${h} ${h === 1 ? "hour" : "hours"}`}
-                        </option>
-                      ))}
-                    </Select>
+                      <Heading level="4" size="xsmall">
+                        Individuals
+                      </Heading>
+                      {state.ignoreList.length === 0 ? (
+                        <BodyShort textColor="subtle">
+                          Usually not needed when the team group covers it.
+                        </BodyShort>
+                      ) : (
+                        <Table size="small">
+                          <Table.Body>
+                            {state.ignoreList.map((entry) => (
+                              <Table.Row key={entry.id}>
+                                {/* Empty cell aligning with the group rows' chevron column */}
+                                <Table.DataCell className="tableCellAction" />
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  {entry.label ?? entry.email}
+                                </Table.HeaderCell>
+                                <Table.DataCell
+                                  textSize="small"
+                                  className="tableCell tableCellSubtle"
+                                >
+                                  {entry.label ? entry.email : ""}
+                                </Table.DataCell>
+                                <Table.DataCell
+                                  align="right"
+                                  className="tableCellAction"
+                                >
+                                  <Button
+                                    variant="tertiary"
+                                    data-color="danger"
+                                    size="small"
+                                    icon={<TrashIcon aria-hidden />}
+                                    title={`Remove ${entry.email}`}
+                                    disabled={busy}
+                                    onClick={() => void removeIgnore(entry.id)}
+                                  />
+                                </Table.DataCell>
+                              </Table.Row>
+                            ))}
+                          </Table.Body>
+                        </Table>
+                      )}
+                      {/* List and add-form are two visual groups — extra air between. */}
+                      <HStack
+                        gap="space-12"
+                        align="end"
+                        wrap
+                        className="addFormRow"
+                      >
+                        <div style={{ width: "24rem", maxWidth: "100%" }}>
+                          <Combobox
+                            label="Add person"
+                            description="Search by name. Matched to Slack via email."
+                            options={peopleOptions.map((p) => ({
+                              label: `${p.fullName ?? p.navIdent} (${p.email})`,
+                              value: p.email ?? "",
+                            }))}
+                            filteredOptions={peopleOptions.map((p) => ({
+                              label: `${p.fullName ?? p.navIdent} (${p.email})`,
+                              value: p.email ?? "",
+                            }))}
+                            isLoading={searching}
+                            shouldAutocomplete={false}
+                            onChange={(e) => {
+                              const v =
+                                e && typeof e === "object" && "target" in e
+                                  ? (e as React.ChangeEvent<HTMLInputElement>)
+                                      .target.value
+                                  : String(e ?? "");
+                              void searchPeople(v);
+                            }}
+                            onToggleSelected={(value, selected) => {
+                              if (selected) {
+                                setSelectedPerson(
+                                  peopleOptions.find(
+                                    (p) => p.email === value,
+                                  ) ?? null,
+                                );
+                              } else {
+                                setSelectedPerson(null);
+                              }
+                            }}
+                            selectedOptions={
+                              selectedPerson
+                                ? [
+                                    {
+                                      label: `${selectedPerson.fullName ?? selectedPerson.navIdent} (${selectedPerson.email})`,
+                                      value: selectedPerson.email ?? "",
+                                    },
+                                  ]
+                                : []
+                            }
+                          />
+                        </div>
+                        <Button
+                          variant="secondary"
+                          disabled={busy || !selectedPerson}
+                          onClick={() => void addPerson()}
+                        >
+                          Add person
+                        </Button>
+                      </HStack>
+                    </VStack>
+                  </section>
+                </Box>
+              </VStack>
+            </section>
+            {/* Deliberately low-key: text-level expandable, not a card. */}
+            <ExpansionCard aria-label="Debugging" size="small">
+              <ExpansionCard.Header>
+                <ExpansionCard.Title size="small">
+                  Debugging
+                </ExpansionCard.Title>
+              </ExpansionCard.Header>
+              <ExpansionCard.Content>
+                <VStack gap="space-12" align="start">
+                  <BodyShort textColor="subtle">
+                    "Run scan now" does a real hourly scan immediately. "Post
+                    test digest" sends a fake digest to the reminder channel to
+                    verify wiring.
+                  </BodyShort>
+                  <HStack gap="space-8" wrap>
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      disabled={busy || state.frozen}
+                      onClick={() => void runTestAction("scan")}
+                    >
+                      Run scan now
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      disabled={busy || state.frozen || !state.targetChannelId}
+                      onClick={() => void runTestAction("ping")}
+                    >
+                      Post test digest
+                    </Button>
                   </HStack>
                 </VStack>
-              </section>
-            </Box>
-
-            <Box
-              asChild
-              background="raised"
-              borderWidth="1"
-              borderColor="neutral-subtle"
-              borderRadius="12"
-              padding="space-24"
-              style={{ width: "100%" }}
-            >
-              <section>
-                <VStack gap="space-24" align="start" style={{ width: "100%" }}>
-                  <VStack gap="space-4" align="start">
-                    <Heading level="3" size="small">
-                      Who gets ignored
-                    </Heading>
-                    <BodyShort textColor="subtle">
-                      Messages from these people never trigger reminders. A
-                      thread counts as handled when one of them wrote the last
-                      reply.
-                    </BodyShort>
-                  </VStack>
-
-                  <Box
-                    background="sunken"
-                    borderRadius="8"
-                    padding="space-16"
-                    style={{ width: "100%" }}
-                    asChild
-                  >
-                    <section aria-label="Groups">
-                      <VStack gap="space-12" align="start">
-                        <Heading level="4" size="xsmall">
-                          Groups
-                        </Heading>
-                        {state.groups.length === 0 && (
-                          <BodyShort textColor="subtle">
-                            No groups yet. Add the team to cover everyone at
-                            once.
-                          </BodyShort>
-                        )}
-                        {state.groups.map((g) => (
-                          <GroupRow
-                            key={`${g.kind}:${g.id}`}
-                            group={g}
-                            busy={busy}
-                            onRemove={() => void removeGroupFn(g)}
-                          />
-                        ))}
-                        <HStack gap="space-8" align="end" wrap>
-                          <div style={{ width: "24rem", maxWidth: "100%" }}>
-                            <Combobox
-                              label="Add group"
-                              description="Team, cluster or seksjon from Team Catalog. Min 3 chars."
-                              options={groupOptions.map((g) => ({
-                                label: `${g.label} (${g.kind})`,
-                                value: `${g.kind}:${g.id}`,
-                              }))}
-                              filteredOptions={groupOptions.map((g) => ({
-                                label: `${g.label} (${g.kind})`,
-                                value: `${g.kind}:${g.id}`,
-                              }))}
-                              isLoading={groupSearching}
-                              shouldAutocomplete={false}
-                              onChange={(v) => {
-                                const q =
-                                  v && typeof v === "object" && "target" in v
-                                    ? (v as React.ChangeEvent<HTMLInputElement>).target.value
-                                    : String(v ?? "");
-                                void searchGroupsFn(q);
-                              }}
-                              onToggleSelected={(value, selected) => {
-                                if (selected) {
-                                  setSelectedGroup(
-                                    groupOptions.find((g) => `${g.kind}:${g.id}` === value) ?? null,
-                                  );
-                                } else {
-                                  setSelectedGroup(null);
-                                }
-                              }}
-                              selectedOptions={
-                                selectedGroup
-                                  ? [
-                                      {
-                                        label: `${selectedGroup.label} (${selectedGroup.kind})`,
-                                        value: `${selectedGroup.kind}:${selectedGroup.id}`,
-                                      },
-                                    ]
-                                  : []
-                              }
-                            />
-                          </div>
-                          <Button
-                            variant="secondary"
-                            disabled={busy || !selectedGroup}
-                            onClick={() => void addGroupFn()}
-                          >
-                            Add group
-                          </Button>
-                        </HStack>
-                      </VStack>
-                    </section>
-                  </Box>
-
-                  <Box
-                    background="sunken"
-                    borderRadius="8"
-                    padding="space-16"
-                    style={{ width: "100%" }}
-                    asChild
-                  >
-                    <section aria-label="Individuals">
-                      <VStack gap="space-12" align="start">
-                        <Heading level="4" size="xsmall">
-                          Individuals
-                        </Heading>
-                        {state.ignoreList.length === 0 && (
-                          <BodyShort textColor="subtle">
-                            Usually not needed when the team group covers it.
-                          </BodyShort>
-                        )}
-                        {state.ignoreList.map((entry) => (
-                          <HStack
-                            key={entry.id}
-                            gap="space-16"
-                            align="center"
-                            justify="space-between"
-                            wrap={false}
-                            style={{ width: "100%" }}
-                          >
-                            <BodyShort style={{ minWidth: 0, overflowWrap: "anywhere" }}>
-                              {entry.label ? `${entry.label} ` : ""}({entry.email})
-                            </BodyShort>
-                            <Button
-                              variant="tertiary"
-                              data-color="danger"
-                              icon={<TrashIcon aria-hidden />}
-                              title={`Remove ${entry.email}`}
-                              disabled={busy}
-                              onClick={() => void removeIgnore(entry.id)}
-                            >
-                              Remove
-                            </Button>
-                          </HStack>
-                        ))}
-                        <HStack gap="space-8" align="end" wrap>
-                          <div style={{ width: "24rem", maxWidth: "100%" }}>
-                            <Combobox
-                              label="Add person"
-                              description="Search by name. Matched to Slack via email."
-                              options={peopleOptions.map((p) => ({
-                                label: `${p.fullName ?? p.navIdent} (${p.email})`,
-                                value: p.email ?? "",
-                              }))}
-                              filteredOptions={peopleOptions.map((p) => ({
-                                label: `${p.fullName ?? p.navIdent} (${p.email})`,
-                                value: p.email ?? "",
-                              }))}
-                              isLoading={searching}
-                              shouldAutocomplete={false}
-                              onChange={(e) => {
-                                const v =
-                                  e && typeof e === "object" && "target" in e
-                                    ? (e as React.ChangeEvent<HTMLInputElement>).target.value
-                                    : String(e ?? "");
-                                void searchPeople(v);
-                              }}
-                              onToggleSelected={(value, selected) => {
-                                if (selected) {
-                                  setSelectedPerson(
-                                    peopleOptions.find((p) => p.email === value) ?? null,
-                                  );
-                                } else {
-                                  setSelectedPerson(null);
-                                }
-                              }}
-                              selectedOptions={
-                                selectedPerson
-                                  ? [
-                                      {
-                                        label: `${selectedPerson.fullName ?? selectedPerson.navIdent} (${selectedPerson.email})`,
-                                        value: selectedPerson.email ?? "",
-                                      },
-                                    ]
-                                  : []
-                              }
-                            />
-                          </div>
-                          <Button
-                            variant="secondary"
-                            disabled={busy || !selectedPerson}
-                            onClick={() => void addPerson()}
-                          >
-                            Add person
-                          </Button>
-                        </HStack>
-                      </VStack>
-                    </section>
-                  </Box>
-                </VStack>
-              </section>
-            </Box>
-            <Box
-              asChild
-              background="raised"
-              borderWidth="1"
-              borderColor="neutral-subtle"
-              borderRadius="12"
-              padding="space-24"
-              style={{ width: "100%" }}
-            >
-              <ExpansionCard aria-label="Test tools" size="small">
-                <ExpansionCard.Header>
-                  <ExpansionCard.Title>Test tools</ExpansionCard.Title>
-                  <ExpansionCard.Description>
-                    Manual triggers. Rarely needed.
-                  </ExpansionCard.Description>
-                </ExpansionCard.Header>
-                <ExpansionCard.Content>
-                  <VStack gap="space-12" align="start">
-                    <HStack gap="space-8" wrap>
-                      <Button
-                        variant="secondary"
-                        size="small"
-                        disabled={busy || state.frozen}
-                        onClick={() => void runTestAction("scan")}
-                      >
-                        Run scan now
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="small"
-                        disabled={
-                          busy || state.frozen || !state.targetChannelId
-                        }
-                        onClick={() => void runTestAction("ping")}
-                      >
-                        Post test reminder
-                      </Button>
-                    </HStack>
-                    <BodyShort>
-                      "Run scan now" does a real hourly scan immediately. "Post
-                      test reminder" sends a clearly marked fake reminder to the
-                      reminder channel to verify wiring.
-                    </BodyShort>
-                  </VStack>
-                </ExpansionCard.Content>
-              </ExpansionCard>
-            </Box>
+              </ExpansionCard.Content>
+            </ExpansionCard>
           </VStack>
         </section>
       </Box>

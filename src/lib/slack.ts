@@ -81,11 +81,6 @@ export async function getSlackClient(): Promise<WebClient> {
   return getSlackClientRaw();
 }
 
-/** Lets interactivity verify state without unfreezing reads. */
-export async function botIsFrozen(): Promise<boolean> {
-  return isFrozen();
-}
-
 export interface JoinedChannel {
   id: string;
   name: string;
@@ -136,6 +131,24 @@ export async function listJoinedChannels(): Promise<JoinedChannel[]> {
 }
 
 /**
+ * The bot's own Slack identity, resolved once via auth.test (no scopes
+ * needed). Bot-posted messages carry `bot_id` in conversations.history but
+ * often NO `user` field — so excluding by user ID alone leaks. We filter on
+ * both. Static per process; the cache never expires.
+ */
+let selfCache: { userId: string; botId: string } | null = null;
+
+async function getSelfIdentity(): Promise<{ userId: string; botId: string }> {
+  if (selfCache) return selfCache;
+  const res = await slackCall("auth.test", (web) => web.auth.test());
+  if (!res.user_id || !res.bot_id) {
+    throw new Error("auth.test missing user_id/bot_id");
+  }
+  selfCache = { userId: res.user_id, botId: res.bot_id };
+  return selfCache;
+}
+
+/**
  * Slack permalinks are deterministic, documented URL math — skip the
  * chat.getPermalink API call entirely:
  *   https://{workspace}.slack.com/archives/{channel}/p{ts without the dot}
@@ -169,6 +182,7 @@ export async function fetchOldUnsolvedMessages(
   olderThanDays: number,
   youngerThanHours: number,
 ): Promise<UnsolvedMessage[]> {
+  const self = await getSelfIdentity();
   const nowS = Date.now() / 1000;
   const oldest = (nowS - olderThanDays * 24 * 60 * 60).toFixed(6);
   const latest = (nowS - youngerThanHours * 60 * 60).toFixed(6);
@@ -182,9 +196,14 @@ export async function fetchOldUnsolvedMessages(
     );
 
     for (const msg of res.messages ?? []) {
-      // Only consider top-level user messages (skip replies, bot posts, join/leave notices)
+      // Only consider top-level user messages (skip replies, bot posts,
+      // join/leave notices)
       if (msg.subtype && msg.subtype !== "thread_broadcast") continue;
       if (!msg.ts || !msg.user) continue;
+      // Never nag about ourselves. Bot posts can lack `subtype`/`user`
+      // filtering hooks, so match on identity: bot_id (primary) or user.
+      const botId = (msg as { bot_id?: string }).bot_id;
+      if (botId === self.botId || msg.user === self.userId) continue;
 
       const solved = (msg.reactions ?? []).some((r) => r.name === "solved");
       if (solved) continue;
@@ -303,57 +322,60 @@ export async function expandIgnoreSet(emails: string[]): Promise<Set<string>> {
   return resolveEmailsToUserIds(emails);
 }
 
-export interface ReminderPayload {
-  originalChannelId: string;
+export interface UnsolvedReminderItem {
   ts: string;
-  author: string;
-  text: string;
   permalink: string;
 }
 
-const MAX_PREVIEW_LENGTH = 300;
+/** Slack unfurls at most 5 links per message — the digest caps at that. */
+const MAX_DIGEST_LINKS = 5;
+
+function formatAge(ts: string, nowMs: number): string {
+  const hours = Math.max(0, Math.round((nowMs - Number(ts) * 1000) / 3_600_000));
+  if (hours < 48) return `${hours} ${hours === 1 ? "time" : "timer"}`;
+  const days = Math.round(hours / 24);
+  return `${days} ${days === 1 ? "dag" : "dager"}`;
+}
 
 /**
- * Posts a Block Kit reminder to the internal channel with a "Merk som løst"
- * button. The button value carries the original channel+ts as JSON so the
- * interactivity endpoint can add :solved: to the right message.
+ * Posts one digest message per scan to the internal channel. Each line is a
+ * bare permalink — Slack auto-unfurls those into message previews, so the
+ * message itself stays clean (no quoted text, no channel name, no buttons).
+ * Replies to the threads themselves are the workflow; a "resolve" shortcut
+ * here would encourage not reading the message.
  */
-export async function postReminder(
+export async function postUnansweredDigest(
   channelId: string,
-  { originalChannelId, ts, author, text, permalink }: ReminderPayload,
+  items: UnsolvedReminderItem[],
 ): Promise<void> {
+  if (items.length === 0) return;
 
-  const preview =
-    text.length > MAX_PREVIEW_LENGTH ? `${text.slice(0, MAX_PREVIEW_LENGTH)}…` : text;
+  const nowMs = Date.now();
+  const shown = items.slice(0, MAX_DIGEST_LINKS);
+  const lines = shown.map(
+    (m) => `${m.permalink} — ubesvart i ${formatAge(m.ts, nowMs)}`,
+  );
+  const overflow = items.length - shown.length;
+  const countNote =
+    overflow > 0
+      ? ` (viser ${shown.length} av ${items.length})`
+      : items.length > 1
+        ? ` (${items.length})`
+        : "";
+  const rest =
+    overflow > 0 ? `\n_…og ${overflow} til i kanalen._` : "";
 
-  const value = JSON.stringify({ channel: originalChannelId, ts });
+  const text = `*Ubesvarte meldinger${countNote}*\n${lines.join("\n")}${rest}`;
 
   const res = await slackCall("chat.postMessage", (web) =>
-    web.chat.postMessage({
-    channel: channelId,
-    text: `Ubesvart melding fra <@${author}> i <#${originalChannelId}>: ${permalink}`,
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `:bell: *Ubesvart melding i <#${originalChannelId}>*\n<@${author}> spurte:\n>${preview.replace(/\n/g, "\n>")}\n\n<${permalink}|Åpne meldingen i Slack>`,
-        },
-      },
-      {
-        type: "actions",
-        elements: [
-          {
-            type: "button",
-            text: { type: "plain_text", text: ":solved: Mark as solved", emoji: true },
-            action_id: "mark_solved",
-            value,
-          },
-        ],
-      },
-    ],
-    }),
+    web.chat.postMessage({ channel: channelId, text }),
   );
 
-  log({ event: "slack.reminder_posted", channel: channelId, original_ts: ts, ok: res.ok === true });
+  log({
+    event: "slack.digest_posted",
+    channel: channelId,
+    count: shown.length,
+    overflow,
+    ok: res.ok === true,
+  });
 }

@@ -10,7 +10,7 @@ import {
   expandIgnoreSet,
   fetchOldUnsolvedMessages,
   isThreadHandled,
-  postReminder,
+  postUnansweredDigest,
 } from "../../lib/slack";
 import { getGroupMemberEmails } from "../../lib/auth";
 import { log, logDebug, logError } from "../../lib/log";
@@ -18,6 +18,8 @@ import { log, logDebug, logError } from "../../lib/log";
 const DEFAULT_SCAN_WINDOW_DAYS = 14;
 /** Messages younger than this get a grace period before the bot cares. */
 const DEFAULT_MIN_MESSAGE_AGE_HOURS = 1;
+/** Cooldown before a nagged message is eligible for another digest. */
+const DEFAULT_RE_NAG_DAYS = 7;
 
 export async function runUnansweredReminder(): Promise<void> {
   const frozen = (await getSetting("frozen")) ?? "false";
@@ -37,6 +39,13 @@ export async function runUnansweredReminder(): Promise<void> {
   const minAgeHours = Number.parseInt(minAgeRaw, 10);
   if (Number.isNaN(minAgeHours) || minAgeHours < 0) {
     logError({ event: "bot.bad_setting", key: "min_age_hours", value: minAgeRaw });
+    return;
+  }
+
+  const reNagRaw = (await getSetting("re_nag_days")) ?? String(DEFAULT_RE_NAG_DAYS);
+  const reNagDays = Number.parseInt(reNagRaw, 10);
+  if (Number.isNaN(reNagDays) || reNagDays < 1) {
+    logError({ event: "bot.bad_setting", key: "re_nag_days", value: reNagRaw });
     return;
   }
 
@@ -143,7 +152,7 @@ export async function runUnansweredReminder(): Promise<void> {
 
   const recentlyNagged = await getRecentlyNaggedTs(
     open.map((m) => m.ts),
-    scanWindowDays,
+    reNagDays,
   );
 
   const toNag = open.filter((m) => !recentlyNagged.has(m.ts));
@@ -164,6 +173,7 @@ export async function runUnansweredReminder(): Promise<void> {
     after_thread_check: open.length,
     to_nag: toNag.length,
     scan_window_days: scanWindowDays,
+    re_nag_days: reNagDays,
   });
 
   await setSetting(
@@ -175,20 +185,18 @@ export async function runUnansweredReminder(): Promise<void> {
     }),
   );
 
-  for (const msg of toNag) {
+  if (toNag.length > 0) {
     try {
-      await postReminder(targetChannel, {
-        originalChannelId: sourceChannel,
-        ts: msg.ts,
-        author: msg.user,
-        text: msg.text,
-        permalink: msg.permalink,
-      });
-      await upsertNagLog(msg.ts, sourceChannel);
+      await postUnansweredDigest(
+        targetChannel,
+        toNag.map((m) => ({ ts: m.ts, permalink: m.permalink })),
+      );
+      for (const m of toNag) {
+        await upsertNagLog(m.ts, sourceChannel);
+      }
     } catch (err) {
       logError({
         event: "bot.nag_failed",
-        ts: msg.ts,
         message: err instanceof Error ? err.message : String(err),
       });
     }

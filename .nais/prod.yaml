@@ -48,10 +48,8 @@ spec:
     outbound:
       external:
         # Slack Web API (slack.com/api) — chat.postMessage, conversations.history,
-        # reactions.*, users.lookupByEmail
+        # reactions.read, users.lookupByEmail
         - host: slack.com
-        # Interactivity response_url webhooks (hooks.slack.com/actions/...)
-        - host: hooks.slack.com
         # Team Catalog membership lookup for admin UI gating
         - host: teamkatalog-api.intern.nav.no
   envFrom:

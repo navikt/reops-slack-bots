@@ -76,9 +76,9 @@ export default async function HomePage() {
           </Heading>
           <BodyLong>
             Hourly, the bot checks {source ? <strong>{source}</strong> : "the chosen channel"}{" "}
-            for messages unanswered for over an hour. Hits get a reminder{" "}
-            {target ? <>in <strong>{target}</strong></> : "in the reminder channel"} with a
-            "Mark as solved" button. Answered means:
+            for messages unanswered for over an hour. Hits are collected into a
+            digest {target ? <>in <strong>{target}</strong></> : "in the reminder channel"} —
+            a link per message, which Slack expands into a preview. Answered means:
           </BodyLong>
           <List>
             <ListItem>a :solved: reaction exists, or</ListItem>
@@ -93,7 +93,8 @@ export default async function HomePage() {
           </Heading>
           <List>
             <ListItem>
-              Solved? Add :solved: or click "Mark as solved" on the reminder.
+              Solved? Add :solved: on the original message — or just reply in
+              the thread.
             </ListItem>
             <ListItem>
               Add the bot to a channel: <code>/invite @reops</code>.

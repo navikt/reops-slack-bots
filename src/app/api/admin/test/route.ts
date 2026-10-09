@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireReopsTeamMember } from "../../../../lib/auth";
 import { getSetting } from "../../../../lib/db";
-import { postReminder } from "../../../../lib/slack";
+import { postUnansweredDigest } from "../../../../lib/slack";
 import { runJob } from "../../../../lib/runner";
 import { log } from "../../../../lib/log";
 
@@ -48,13 +48,12 @@ export async function POST(req: Request): Promise<Response> {
       return NextResponse.json({ error: "No reminder channel configured" }, { status: 409 });
     }
     log({ event: "admin.test_ping", channel: target, by: auth.user.navIdent });
-    await postReminder(target, {
-      originalChannelId: target,
-      ts: `test-${Date.now()}`,
-      author: auth.user.navIdent,
-      text: "TEST MESSAGE from the admin page. Wiring check only. Nothing is actually unanswered.",
-      permalink: "https://github.com/navikt/reops-slack-bots",
-    });
+    await postUnansweredDigest(target, [
+      {
+        ts: String(Date.now() / 1000),
+        permalink: "https://github.com/navikt/reops-slack-bots",
+      },
+    ]);
     return NextResponse.json({ ok: true });
   }
 

@@ -16,6 +16,7 @@ export async function POST(req: Request): Promise<Response> {
     frozen?: boolean;
     scanWindowDays?: number;
     minAgeHours?: number;
+    reNagDays?: number;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   };
@@ -46,6 +47,15 @@ export async function POST(req: Request): Promise<Response> {
     }
     await setSetting("min_age_hours", String(hours));
     log({ event: "admin.settings_changed", key: "min_age_hours", value: String(hours), by: auth.user.navIdent });
+  }
+
+  if (body.reNagDays !== undefined) {
+    const days = Math.trunc(body.reNagDays);
+    if (!Number.isFinite(days) || days < 1 || days > 90) {
+      return NextResponse.json({ error: "reNagDays must be 1-90" }, { status: 400 });
+    }
+    await setSetting("re_nag_days", String(days));
+    log({ event: "admin.settings_changed", key: "re_nag_days", value: String(days), by: auth.user.navIdent });
   }
 
   // Channel pickers: null/empty string clears the setting (job skips until set).

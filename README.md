@@ -10,9 +10,10 @@ identity; a "behavior" is a piece of code that runs under it. Other teams
 wanting their own identity create their own Slack app from this codebase.
 
 Currently one behavior: **unanswered-reminder** — scans #researchops for old
-messages without a `:solved:` reaction and posts a reminder (with a
-"Merk som løst" button) to #researchops-intern. Clicking the button adds a
-`:solved:` reaction to the original message via Slack interactivity.
+messages without a `:solved:` reaction and posts one digest message per scan
+to #researchops-intern: up to 5 bare permalinks (Slack's unfurl cap), which
+Slack auto-unfurls into message previews. No buttons — resolving means
+reading and replying to the actual thread.
 
 A message counts as unanswered only if ALL of these hold:
 
@@ -62,19 +63,15 @@ Required bot token scopes:
 - `groups:history` — read messages in private channels the bot is invited to
 - `groups:read` — private channel metadata
 - `reactions:read` — check for `:solved:` reactions
-- `reactions:write` — add `:solved:` when "Merk som løst" is clicked
-- `chat:write` — post reminders
+- `chat:write` — post the digest
 - `users:read.email` — resolve Team Catalog member emails to Slack users
-
-Interactivity: set the Request URL to
-`https://reops.ansatt.nav.no/api/slack/interactivity`.
 
 ## Required env vars
 
 | Var | Description |
 |---|---|
 | `SLACK_BOT_TOKEN` | Bot User OAuth Token (`xoxb-…`) |
-| `SLACK_SIGNING_SECRET` | Slack app signing secret (interactivity verification) |
+| `SLACK_SIGNING_SECRET` | Slack app signing secret (only needed if interactivity is re-added) |
 | `DATABASE_URL` | Postgres connection string (injected by Nais) |
 | `RESEARCHOPS_CHANNEL_ID` | Fallback channel to scan (admin UI setting wins) |
 | `RESEARCHOPS_INTERN_CHANNEL_ID` | Fallback reminder channel (admin UI setting wins) |
@@ -105,8 +102,7 @@ ADMIN_DEV_BYPASS=true   # skips Azure AD + Team Catalog on /admin (dev only)
 ```
 
 Note: with a token set, the hourly job runs from your laptop too and can post
-real reminders — pick a private test channel before enabling it. Buttons
-always hit the deployed interactivity URL; test clicks against prod.
+real digests — pick a private test channel before enabling it.
 
 Without `DATABASE_URL` the server starts fine, but migrations and jobs
 are skipped (logged as `server.no_database_url`). The admin UI requires a

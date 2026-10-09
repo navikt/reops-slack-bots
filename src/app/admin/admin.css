@@ -1,0 +1,72 @@
+/* Row content sits on one visual line — center cells vertically. */
+:where(.aksel-table__header-cell, .aksel-table__data-cell).tableCell,
+:where(.aksel-table__data-cell).tableCellAction {
+  vertical-align: middle;
+}
+
+/* Primary cell: wrap long text. */
+.tableCell {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Secondary cell: clamp to one line so rows stay uniform height. */
+.tableCellSubtle {
+  color: var(--ax-text-neutral-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24rem;
+}
+
+/* Row action column: never wrap, hug content. */
+.tableCellAction {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* Add-form row: built-in extra air above it (flex gap alone is only 12px).
+   Pseudo-element so the VStack keeps equal gaps when the list above is
+   empty — no stray double margin against the section heading. */
+.addFormRow::before {
+  content: "";
+  flex-basis: 100%;
+  height: var(--ax-space-8);
+}
+
+/* Side-by-side form fields that collapse to one column on narrow screens.
+   Each cell sizes to its whole field (label + description + input), so a
+   long label widens its own input instead of pushing the next column out.
+   minmax(0, …) keeps very long labels truncating instead of overflowing. */
+.fieldRow {
+  display: grid;
+  gap: var(--ax-space-16);
+  grid-template-columns: 1fr;
+  align-items: start;
+  width: 100%;
+}
+
+@media (min-width: 480px) {
+  .fieldRow {
+    /* Equal columns so fields (and their inputs) align on a shared grid. */
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    /* Stretch cells so all fields in a row share the same height... */
+    align-items: stretch;
+  }
+
+  /* ...then pin each input to the cell bottom so inputs line up even when
+     descriptions wrap to a different number of lines. */
+  .fieldRow > * {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .fieldRow > * > .aksel-select__container,
+  .fieldRow > * > .aksel-text-field__input-wrapper {
+    margin-top: auto;
+  }
+}
+
+.fieldRow > * {
+  min-width: 0;
+}
