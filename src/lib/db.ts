@@ -222,3 +222,14 @@ export async function upsertNagLog(messageTs: string, channelId: string): Promis
     [messageTs, channelId],
   );
 }
+
+/**
+ * Drops the entire public schema (all tables incl. schema_migrations) and
+ * recreates it empty. Boot-time migrations rebuild everything on next run —
+ * call runMigrations() right after, or restart the app.
+ */
+export async function wipeDatabase(): Promise<void> {
+  await query("DROP SCHEMA public CASCADE");
+  await query("CREATE SCHEMA public");
+  await query("GRANT ALL ON SCHEMA public TO public");
+}

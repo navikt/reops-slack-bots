@@ -11,6 +11,7 @@ import {
   HStack,
   List,
   Loader,
+  Modal,
   Select,
   Switch,
   Table,
@@ -749,6 +750,28 @@ export function AdminClient() {
     }
   };
 
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wipeDone, setWipeDone] = useState(false);
+
+  const wipeDb = async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch("/api/admin/wipe", { method: "POST" });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setActionError(data?.error ?? `Wipe failed (${res.status})`);
+        return;
+      }
+      setWipeDone(true);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runTestAction = async (action: "scan" | "ping") => {
     setBusy(true);
     setActionError(null);
@@ -1128,10 +1151,10 @@ export function AdminClient() {
             </VStack>
 
             {/* Deliberately low-key: text-level expandable, not a card. */}
-            <ExpansionCard aria-label="Debugging" size="small">
+            <ExpansionCard aria-label="Advanced" size="small">
               <ExpansionCard.Header>
                 <ExpansionCard.Title size="small">
-                  Debugging
+                  Advanced
                 </ExpansionCard.Title>
               </ExpansionCard.Header>
               <ExpansionCard.Content>
@@ -1166,9 +1189,64 @@ export function AdminClient() {
                       )}
                     </HStack>
                   )}
+
+                  <div>
+                    <Heading level="5" size="xsmall" spacing>
+                      Danger zone
+                    </Heading>
+                    <BodyShort textColor="subtle" spacing>
+                      Drops all tables (settings, ignore lists, admin groups,
+                      nag log) and re-runs migrations — the app returns to
+                      fresh-boot state, including open-bootstrap admin mode.
+                    </BodyShort>
+                    {wipeDone ? (
+                      <Alert variant="success" size="small">
+                        Database wiped and rebuilt.
+                      </Alert>
+                    ) : (
+                      <Button
+                        variant="danger"
+                        size="small"
+                        onClick={() => setWipeOpen(true)}
+                      >
+                        Wipe database…
+                      </Button>
+                    )}
+                  </div>
                 </VStack>
               </ExpansionCard.Content>
             </ExpansionCard>
+
+            <Modal
+              open={wipeOpen}
+              onClose={() => setWipeOpen(false)}
+              header={{ heading: "Wipe the database?" }}
+              width="small"
+            >
+              <Modal.Body>
+                <BodyShort>
+                  This drops every table and rebuilds from migrations.
+                  Settings, ignore lists, admin groups and nag history are
+                  permanently gone. The bot reverts to frozen until
+                  reconfigured.
+                </BodyShort>
+              </Modal.Body>
+              <Modal.Footer>
+                <Button
+                  variant="danger"
+                  loading={busy}
+                  onClick={() => {
+                    setWipeOpen(false);
+                    void wipeDb();
+                  }}
+                >
+                  Yes, wipe everything
+                </Button>
+                <Button variant="secondary" onClick={() => setWipeOpen(false)}>
+                  Cancel
+                </Button>
+              </Modal.Footer>
+            </Modal>
           </VStack>
         </section>
       </Box>
