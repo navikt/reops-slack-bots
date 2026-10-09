@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
+  BodyShort,
   Box,
   Button,
   Heading,
@@ -23,10 +24,27 @@ interface IgnoreEntry {
   label: string | null;
 }
 
+interface JoinedChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+}
+
+interface LastScan {
+  at: string;
+  unsolved: number;
+  nagged: number;
+}
+
 interface AdminState {
   enabled: boolean;
   nagFrequencyDays: number;
   ignoreList: IgnoreEntry[];
+  sourceChannelId: string | null;
+  targetChannelId: string | null;
+  channels: JoinedChannel[];
+  channelsError: string | null;
+  lastScan: LastScan | null;
 }
 
 export function AdminClient() {
@@ -57,7 +75,12 @@ export function AdminClient() {
     void load();
   }, [load]);
 
-  const saveSettings = async (patch: { enabled?: boolean; nagFrequencyDays?: number }) => {
+  const saveSettings = async (patch: {
+    enabled?: boolean;
+    nagFrequencyDays?: number;
+    sourceChannelId?: string | null;
+    targetChannelId?: string | null;
+  }) => {
     setBusy(true);
     setActionError(null);
     try {
@@ -134,6 +157,91 @@ export function AdminClient() {
   return (
     <VStack gap="space-24" align="start">
       {actionError && <Alert variant="error">{actionError}</Alert>}
+
+      <Box asChild>
+        <section>
+          <VStack gap="space-12" align="start">
+            <Heading level="2" size="medium" spacing>
+              Status
+            </Heading>
+            {state.lastScan ? (
+              <BodyShort>
+                Siste sjekk:{" "}
+                {new Date(state.lastScan.at).toLocaleString("nb-NO", {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}{" "}
+                — {state.lastScan.unsolved} ubesvarte funne,{" "}
+                {state.lastScan.nagged} påminningar sendte. Jobben køyrer
+                klar klokkeslett kvart heile time.
+              </BodyShort>
+            ) : (
+              <BodyShort>
+                Ingen sjekk køyrt enno — jobben startar innan ein time etter
+                oppstart.
+              </BodyShort>
+            )}
+          </VStack>
+        </section>
+      </Box>
+
+      <Box asChild>
+        <section>
+          <VStack gap="space-12" align="start">
+            <Heading level="2" size="medium" spacing>
+              Kanalar
+            </Heading>
+            <BodyShort>
+              Inviter boten (@reops) til ein kanal for å få han til å visast
+              her.
+            </BodyShort>
+            {state.channelsError && (
+              <Alert variant="warning">
+                Kunne ikkje hente kanalar frå Slack ({state.channelsError}).
+                Er SLACK_BOT_TOKEN sett?
+              </Alert>
+            )}
+            <HStack gap="space-16" align="start" wrap>
+              <Select
+                label="Kanal som overvakast"
+                description="Meldingar her sjekkast for svar"
+                value={state.sourceChannelId ?? ""}
+                disabled={busy}
+                onChange={(e) =>
+                  void saveSettings({ sourceChannelId: e.target.value || null })
+                }
+                style={{ width: "18rem" }}
+              >
+                <option value="">Ikkje valt</option>
+                {state.channels.map((ch) => (
+                  <option key={ch.id} value={ch.id}>
+                    {ch.isPrivate ? "🔒 " : "#"}
+                    {ch.name}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                label="Kanal for påminningar"
+                description="Påminningar om ubesvarte meldingar postast her"
+                value={state.targetChannelId ?? ""}
+                disabled={busy}
+                onChange={(e) =>
+                  void saveSettings({ targetChannelId: e.target.value || null })
+                }
+                style={{ width: "18rem" }}
+              >
+                <option value="">Ikkje valt</option>
+                {state.channels.map((ch) => (
+                  <option key={ch.id} value={ch.id}>
+                    {ch.isPrivate ? "🔒 " : "#"}
+                    {ch.name}
+                  </option>
+                ))}
+              </Select>
+            </HStack>
+          </VStack>
+        </section>
+      </Box>
 
       <Box asChild>
         <section>

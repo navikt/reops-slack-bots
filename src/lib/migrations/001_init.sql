@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT INTO settings (key, value) VALUES
-  ('nag_frequency_days', '7'),
+  ('nag_frequency_days', '14'),
   ('enabled', 'true')
 ON CONFLICT (key) DO NOTHING;
 

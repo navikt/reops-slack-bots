@@ -12,7 +12,12 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: auth.status }, { status });
   }
 
-  let body: { enabled?: boolean; nagFrequencyDays?: number };
+  let body: {
+    enabled?: boolean;
+    nagFrequencyDays?: number;
+    sourceChannelId?: string | null;
+    targetChannelId?: string | null;
+  };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -34,6 +39,26 @@ export async function POST(req: Request): Promise<Response> {
     }
     await setSetting("nag_frequency_days", String(days));
     log({ event: "admin.settings_changed", key: "nag_frequency_days", value: String(days), by: auth.user.navIdent });
+  }
+
+  // Channel pickers: null/empty string clears the setting (job skips until set).
+  const channelIdPattern = /^[CG][A-Z0-9]+$/;
+  if (body.sourceChannelId !== undefined) {
+    const v = body.sourceChannelId?.trim() ?? "";
+    if (v && !channelIdPattern.test(v)) {
+      return NextResponse.json({ error: "Ugyldig kanal-ID" }, { status: 400 });
+    }
+    await setSetting("unanswered_reminder.source_channel_id", v);
+    log({ event: "admin.settings_changed", key: "source_channel_id", value: v, by: auth.user.navIdent });
+  }
+
+  if (body.targetChannelId !== undefined) {
+    const v = body.targetChannelId?.trim() ?? "";
+    if (v && !channelIdPattern.test(v)) {
+      return NextResponse.json({ error: "Ugyldig kanal-ID" }, { status: 400 });
+    }
+    await setSetting("unanswered_reminder.target_channel_id", v);
+    log({ event: "admin.settings_changed", key: "target_channel_id", value: v, by: auth.user.navIdent });
   }
 
   return NextResponse.json({ ok: true });

@@ -1,0 +1,39 @@
+{
+  "_metadata": {
+    "major_version": 2
+  },
+  "display_information": {
+    "name": "reops",
+    "description": "Automation behaviors run by Team ResearchOps (unanswered-reminder)"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "reops",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "reactions:read",
+        "reactions:write",
+        "chat:write",
+        "usergroups:read"
+      ]
+    }
+  },
+  "settings": {
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "https://reops.ansatt.nav.no/api/slack/interactivity"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "is_hosted": false,
+    "token_rotation_enabled": false
+  }
+}

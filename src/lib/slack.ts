@@ -12,27 +12,67 @@ export function getSlackClient(): WebClient {
   return client;
 }
 
+export interface JoinedChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+}
+
+/**
+ * Lists channels the bot is a member of (public + private). Powers the
+ * channel pickers in /admin — "invite the bot to a channel to have it
+ * appear here".
+ */
+export async function listJoinedChannels(): Promise<JoinedChannel[]> {
+  const web = getSlackClient();
+  const channels: JoinedChannel[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const res = await web.conversations.list({
+      types: "public_channel,private_channel",
+      exclude_archived: true,
+      limit: 200,
+      cursor,
+    });
+
+    for (const ch of res.channels ?? []) {
+      if (!ch.id || !ch.name || !ch.is_member) continue;
+      channels.push({ id: ch.id, name: ch.name, isPrivate: ch.is_private === true });
+    }
+
+    cursor = res.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+
+  return channels.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export interface UnsolvedMessage {
   ts: string;
   user: string;
   text: string;
   permalink: string;
+  replyCount: number;
 }
 
 /**
- * Fetches top-level messages in the channel older than `olderThanDays`,
- * returning those that do NOT have a :solved: reaction.
+ * Fetches top-level messages in a bounded window:
+ * older than `olderThanDays` but younger than `youngerThanHours`.
+ * The upper bound keeps the scan cheap (never re-reads full history) and
+ * stateless (no cursor to lose on restart); the lower bound gives people a
+ * grace period to answer before the bot considers a message "unanswered".
  *
- * Note on reactions: conversations.history already embeds each message's
- * reactions, so we check those directly and only fall back to reactions.get
- * if reactions are missing from the history payload.
+ * Only messages without a :solved: reaction on the parent are returned.
  */
 export async function fetchOldUnsolvedMessages(
   channelId: string,
   olderThanDays: number,
+  youngerThanHours: number,
 ): Promise<UnsolvedMessage[]> {
   const web = getSlackClient();
-  const cutoff = (Date.now() / 1000 - olderThanDays * 24 * 60 * 60).toFixed(6);
+  const nowS = Date.now() / 1000;
+  const oldest = (nowS - olderThanDays * 24 * 60 * 60).toFixed(6);
+  const latest = (nowS - youngerThanHours * 60 * 60).toFixed(6);
 
   const unsolved: UnsolvedMessage[] = [];
   let cursor: string | undefined;
@@ -40,7 +80,8 @@ export async function fetchOldUnsolvedMessages(
   do {
     const res = await web.conversations.history({
       channel: channelId,
-      latest: cutoff,
+      oldest,
+      latest,
       limit: 200,
       cursor,
     });
@@ -65,13 +106,57 @@ export async function fetchOldUnsolvedMessages(
         });
       }
 
-      unsolved.push({ ts: msg.ts, user: msg.user, text: msg.text ?? "", permalink });
+      unsolved.push({
+        ts: msg.ts,
+        user: msg.user,
+        text: msg.text ?? "",
+        permalink,
+        replyCount: msg.reply_count ?? 0,
+      });
     }
 
     cursor = res.response_metadata?.next_cursor || undefined;
   } while (cursor);
 
   return unsolved;
+}
+
+/**
+ * Decides whether a thread is already "handled": either the last reply was
+ * written by someone on the ignore list (team member), or any message in the
+ * thread carries a :solved: reaction. A later reply from a non-team user
+ * flips it back to nag-worthy on the next run.
+ *
+ * Fail-open on API errors: returns false so the message still gets nagged
+ * rather than silently dropped.
+ */
+export async function isThreadHandled(
+  channelId: string,
+  threadTs: string,
+  ignoreSet: ReadonlySet<string>,
+): Promise<boolean> {
+  const web = getSlackClient();
+
+  try {
+    const res = await web.conversations.replies({ channel: channelId, ts: threadTs });
+    const messages = res.messages ?? [];
+    if (messages.length === 0) return false;
+
+    const hasSolvedReaction = messages.some((m) =>
+      (m.reactions ?? []).some((r) => r.name === "solved"),
+    );
+    if (hasSolvedReaction) return true;
+
+    const last = messages[messages.length - 1];
+    return Boolean(last.user && ignoreSet.has(last.user));
+  } catch (err) {
+    logError({
+      event: "slack.thread_check_failed",
+      ts: threadTs,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
 }
 
 /**

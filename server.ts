@@ -24,9 +24,9 @@ export async function startServer(): Promise<void> {
   const jobs: BotJob[] = [
     {
       name: "unanswered-reminder",
-      // Wake up every 3 hours; the job itself checks nag_frequency_days from
-      // the settings table to decide whether re-nagging is due.
-      intervalMs: 3 * 60 * 60 * 1000,
+      // Wake up hourly; the job itself applies a 1-hour grace period to new
+      // messages and checks nag_frequency_days before re-nagging.
+      intervalMs: 60 * 60 * 1000,
       run: async () => {
         const { runUnansweredReminder } = await import("./src/bots/unanswered-reminder/run");
         await runUnansweredReminder();

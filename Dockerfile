@@ -1,51 +1,40 @@
 # syntax=docker/dockerfile:1
 
-# Base stage - Chainguard Node.js image with pnpm
-FROM cgr.dev/chainguard/node:latest-dev AS base
+# Stage 1: build — Chainguard Node via Nav pull-through (pinned major, no latest)
+FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:22-dev AS builder
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
 USER root
-RUN apk update && apk add --no-cache pnpm
-ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
-RUN mkdir -p "$PNPM_HOME" && chown -R node:node "$PNPM_HOME"
+RUN corepack enable && corepack prepare pnpm@11.4.0 --activate
 USER node
 
-# ── Dependencies ──────────────────────────────────────────────────────────────
-FROM base AS deps
-WORKDIR /usr/src/app
-
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store,uid=65532 \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
-# ── Build ─────────────────────────────────────────────────────────────────────
-FROM base AS builder
-WORKDIR /usr/src/app
-
-COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules
 COPY --chown=node:node . .
 
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV CI=true
 
-RUN pnpm build
+RUN pnpm run build
 
-# ── Production image ──────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/node@sha256:c002402b355201714dfbeb3b1a7ca99152cccced4b334496db2442a3a9bf4883 AS runner
-WORKDIR /usr/src/app
+# Stage 2: distroless runtime
+FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:22-slim AS runner
+WORKDIR /app
 
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}
 ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-
-COPY --from=builder /usr/src/app/public ./public
-COPY --from=builder --chown=node:node /usr/src/app/.next/standalone ./
-COPY --from=builder --chown=node:node /usr/src/app/.next/static ./.next/static
-
-EXPOSE 9092
 ENV PORT=9092
 ENV HOSTNAME="0.0.0.0"
+ENV NEXT_TELEMETRY_DISABLED=1
 
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+
+EXPOSE 9092
 CMD ["server.js"]

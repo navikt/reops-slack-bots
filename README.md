@@ -1,11 +1,29 @@
 # reops-slack-bots
 
-Home for internal Slack bots for Team ResearchOps at Nav.
+Home for internal Slack automation for Team ResearchOps at Nav.
 
-Currently one bot: **unanswered-reminder** — scans #researchops for old
+## Terminology
+
+There is ONE Slack app / bot user (**reops**). It hosts multiple **behaviors**
+(scheduled jobs under `src/bots/<behavior>/`). A "bot user" is the Slack
+identity; a "behavior" is a piece of code that runs under it. Other teams
+wanting their own identity create their own Slack app from this codebase.
+
+Currently one behavior: **unanswered-reminder** — scans #researchops for old
 messages without a `:solved:` reaction and posts a reminder (with a
 "Merk som løst" button) to #researchops-intern. Clicking the button adds a
 `:solved:` reaction to the original message via Slack interactivity.
+
+A message counts as unanswered only if ALL of these hold:
+
+- parent message has no `:solved:` reaction
+- message is older than 1 hour (grace period) and younger than
+  `nag_frequency_days` — the job never re-scans ancient history
+- author is not on the ignore list
+- if the message has a thread: last reply is NOT from someone on the ignore
+  list (team member), and no message in the thread has `:solved:` —
+  a later non-team reply flips it back to nag-worthy
+- it hasn't been nagged within `nag_frequency_days` (see `nag_log`)
 
 ## Architecture
 
@@ -13,26 +31,42 @@ Next.js app on Nais (GCP), Postgres for settings/ignore-list/nag-log.
 Cron-on-boot pattern: `instrumentation.ts` calls `server.ts` on process start,
 which runs migrations (`src/lib/migrations/*.sql`, tracked in
 `schema_migrations`) and starts interval jobs (`src/lib/runner.ts`).
-The unanswered-reminder job wakes every 3 hours; whether a message is due
+The unanswered-reminder job wakes hourly; whether a message is due
 for a (re-)nag is driven by the `nag_frequency_days` row in `settings`.
 
 Admin UI at `/admin`, gated server-side to Team ResearchOps members
 (Azure AD token via `@navikt/oasis`, live membership lookup against Team
-Catalog — fails closed if Team Catalog is unreachable).
+Catalog — fails closed if Team Catalog is unreachable). Channels are picked
+in the admin UI from the channels the bot user has been invited to
+(settings keys `unanswered_reminder.source_channel_id` /
+`.target_channel_id`); the `RESEARCHOPS_*_CHANNEL_ID` env vars act as
+fallbacks.
+
+The root page `/` is a public (internal) explainer: what the bot does, which
+channels it watches, and how to use `:solved:` / invite the bot.
 
 ## Slack app setup
 
+Create the app at https://api.slack.com/apps?new_app=1 → **From a manifest** →
+paste `slack-app-manifest.json` (repo root). Then install to workspace and
+copy the bot token + signing secret into the `reops-slack-bots` secret.
+
+Note: the manifest deliberately omits `chat:write.public`, so the bot user can only
+post to channels it has been invited to.
+
 Required bot token scopes:
 
-- `channels:history` — read messages in #researchops
-- `channels:read` — channel metadata
+- `channels:history` — read messages in public channels the bot is invited to
+- `channels:read` — public channel metadata
+- `groups:history` — read messages in private channels the bot is invited to
+- `groups:read` — private channel metadata
 - `reactions:read` — check for `:solved:` reactions
 - `reactions:write` — add `:solved:` when "Merk som løst" is clicked
-- `chat:write` — post reminders to #researchops-intern
+- `chat:write` — post reminders
 - `usergroups:read` — expand ignored usergroups into member IDs
 
 Interactivity: set the Request URL to
-`https://reops-slack-bots.ansatt.nav.no/api/slack/interactivity`.
+`https://reops.ansatt.nav.no/api/slack/interactivity`.
 
 ## Required env vars
 
@@ -41,8 +75,8 @@ Interactivity: set the Request URL to
 | `SLACK_BOT_TOKEN` | Bot User OAuth Token (`xoxb-…`) |
 | `SLACK_SIGNING_SECRET` | Slack app signing secret (interactivity verification) |
 | `DATABASE_URL` | Postgres connection string (injected by Nais) |
-| `RESEARCHOPS_CHANNEL_ID` | Channel to scan (e.g. `C0123…`) |
-| `RESEARCHOPS_INTERN_CHANNEL_ID` | Channel to post reminders to |
+| `RESEARCHOPS_CHANNEL_ID` | Fallback channel to scan (admin UI setting wins) |
+| `RESEARCHOPS_INTERN_CHANNEL_ID` | Fallback reminder channel (admin UI setting wins) |
 | `SLACK_RESEARCHOPS_USERGROUP_ID` | Usergroup (`S…`) seeded onto the ignore list at startup |
 
 On Nais, the first two live in the `reops-slack-bots` secret; `DATABASE_URL`
@@ -56,7 +90,7 @@ pnpm dev        # Next.js on port 9092
 pnpm check      # tsc --noEmit
 ```
 
-Without `DATABASE_URL` the server starts fine, but migrations and bot jobs
+Without `DATABASE_URL` the server starts fine, but migrations and jobs
 are skipped (logged as `server.no_database_url`). The admin UI requires a
 valid Azure AD token plus Team Catalog reachability (naisdevice), so it only
 works fully when deployed or behind naisdevice.

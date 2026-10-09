@@ -8,7 +8,7 @@ metadata:
 spec:
   image: "{{ image }}"
   ingresses:
-    - https://reops-slack-bots.ansatt.dev.nav.no
+    - https://reops.ansatt.nav.no
   port: 9092
   liveness:
     path: /api/internal/isalive
@@ -58,6 +58,6 @@ spec:
     - secret: reops-slack-bots
   env:
     - name: ENVIRONMENT
-      value: dev
+      value: production
     - name: DATABASE_URL
       value: "$(NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_JDBC_URL)"
