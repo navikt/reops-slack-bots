@@ -96,8 +96,11 @@ post to channels it has been invited to.
 
 Interactivity: the digest's Suppress buttons POST to
 `/api/slack/interactions` (signature-verified with `SLACK_SIGNING_SECRET`).
-The manifest sets the Request URL to the prod ingress; for local testing,
-temporarily point the app's Interactivity URL at a tunnel (e.g.
+The manifest sets the Request URL to the prod public ingress
+(`https://reops-slack-bots.nav.no/api/slack/interactions`) — Slack webhooks
+must use the `*.nav.no` ingress because `*.ansatt.nav.no` forces SSO at the
+platform level with no path exceptions. For local testing, temporarily point
+the app's Interactivity URL at a tunnel (e.g.
 `cloudflared tunnel --url http://localhost:9092`) →
 `https://<tunnel>/api/slack/interactions`.
 

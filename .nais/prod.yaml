@@ -8,7 +8,14 @@ metadata:
 spec:
   image: "{{ image }}"
   ingresses:
+    # Human-facing admin UI. ansatt.nav.no forces SSO at the platform level —
+    # no exceptions possible — so machine webhooks can't live here.
     - https://reops.ansatt.nav.no
+    # Machine-facing Slack webhook. Public internet, path-scoped to /api/slack
+    # (covers interactivity, events, slash commands). Each route under it does
+    # its own HMAC signature verification; everything else on this host 404s
+    # via src/middleware.ts.
+    - https://reops-slack-bots.nav.no/api/slack
   port: 9092
   liveness:
     path: /api/internal/isalive
@@ -33,10 +40,6 @@ spec:
     sidecar:
       enabled: true
       autoLogin: true
-      autoLoginIgnorePaths:
-        # Slack interactivity webhook — Slack's servers can't follow the
-        # OAuth login redirect. Signature-verified in the route itself.
-        - /api/slack/interactions
   gcp:
     sqlInstances:
       - type: POSTGRES_18

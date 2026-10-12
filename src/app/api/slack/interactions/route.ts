@@ -30,8 +30,10 @@ export const runtime = "nodejs";
  * req.text(), never req.json().
  *
  * Setup: the app's Interactivity Request URL must point here
- * (https://<host>/api/slack/interactions) — see README. Signing secret lives
- * in the `reops-slack-bots` secret as SLACK_SIGNING_SECRET.
+ * (https://reops-slack-bots.nav.no/api/slack/interactions — the PUBLIC
+ * ingress; ansatt.nav.no is platform-SSO'd and would 302 the webhook).
+ * Signing secret lives in the `reops-slack-bots` secret as
+ * SLACK_SIGNING_SECRET.
  *
  * Slack demands a 2xx within 3s; the DB writes + one chat.update are well
  * within that. Feedback is instant: the pressed link disappears from the
