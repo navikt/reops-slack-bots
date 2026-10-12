@@ -40,6 +40,15 @@ spec:
     sidecar:
       enabled: true
       autoLogin: true
+      autoLoginIgnorePaths:
+        # Slack webhooks land on the PUBLIC ingress (reops-slack-bots.nav.no)
+        # because ansatt.nav.no has a separate platform-level SSO layer with
+        # no exceptions. Wonderwall still runs on that ingress though, so we
+        # must exempt the Slack paths here — otherwise it 401s the webhook
+        # before it reaches the app. Routes under /api/slack/* do their own
+        # HMAC-SHA256 signature verification (SLACK_SIGNING_SECRET).
+        - /api/slack
+        - /api/slack/**
   gcp:
     sqlInstances:
       - type: POSTGRES_18

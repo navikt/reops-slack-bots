@@ -51,7 +51,14 @@ export async function POST(req: Request): Promise<Response> {
   const sig = req.headers.get("x-slack-signature") ?? "";
 
   // Replay window: reject stale timestamps before comparing signatures.
-  if (!/^\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 60 * 5) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ageSec = /^\d+$/.test(ts) ? nowSec - Number(ts) : null;
+  if (ageSec === null || Math.abs(ageSec) > 60 * 5) {
+    logError({
+      event: "slack.interactions.stale_timestamp",
+      ts_header: ts,
+      age_seconds: ageSec,
+    });
     return NextResponse.json({ error: "stale" }, { status: 401 });
   }
 
@@ -61,7 +68,14 @@ export async function POST(req: Request): Promise<Response> {
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    logError({ event: "slack.interactions.bad_signature" });
+    // Log only prefixes — enough to distinguish "empty header" vs "wrong
+    // secret" without leaking the signature itself.
+    logError({
+      event: "slack.interactions.bad_signature",
+      sig_prefix: sig.slice(0, 12),
+      expected_prefix: expected.slice(0, 12),
+      body_bytes: body.length,
+    });
     return NextResponse.json({ error: "bad signature" }, { status: 401 });
   }
 
@@ -88,6 +102,7 @@ export async function POST(req: Request): Promise<Response> {
 
   if (payload.type !== "block_actions" || !payload.actions?.length) {
     // url_verification or unknown types: ack and ignore.
+    log({ event: "slack.interactions.acked", payload_type: payload.type ?? "unknown" });
     return NextResponse.json({ ok: true });
   }
 

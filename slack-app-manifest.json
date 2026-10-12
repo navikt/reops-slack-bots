@@ -1,41 +1,40 @@
 {
-  "_metadata": {
-    "major_version": 2
-  },
-  "display_information": {
-    "name": "reops",
-    "description": "Automation behaviors run by Team ResearchOps (unanswered-reminder)"
-  },
-  "features": {
-    "bot_user": {
-      "display_name": "reops",
-      "always_online": false
-    }
-  },
-  "oauth_config": {
-    "scopes": {
-      "bot": [
-        "channels:history",
-        "channels:read",
-        "chat:write",
-        "groups:history",
-        "groups:read",
-        "reactions:read",
-        "reactions:write",
-        "usergroups:read",
-        "users:read",
-        "users:read.email"
-      ]
-    }
-  },
-  "settings": {
-    "interactivity": {
-      "is_enabled": true,
-      "request_url": "https://reops-slack-bots.nav.no/api/slack/interactions"
+    "display_information": {
+        "name": "reops",
+        "description": "Automation behaviors run by Team ResearchOps (beyond webhooks)"
     },
-    "org_deploy_enabled": false,
-    "socket_mode_enabled": false,
-    "is_hosted": false,
-    "token_rotation_enabled": false
-  }
+    "features": {
+        "bot_user": {
+            "display_name": "reops",
+            "always_online": false
+        }
+    },
+    "oauth_config": {
+        "scopes": {
+            "bot": [
+                "channels:history",
+                "channels:read",
+                "groups:history",
+                "groups:read",
+                "reactions:read",
+                "reactions:write",
+                "chat:write",
+                "usergroups:read",
+                "users:read",
+                "users:read.email"
+            ]
+        },
+        "pkce_enabled": false
+    },
+    "settings": {
+        "interactivity": {
+            "is_enabled": true,
+            "request_url": "https://reops-slack-bots.nav.no/api/slack/interactions"
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false,
+        "app_level_token_rotation_enabled": false,
+        "is_mcp_enabled": false
+    }
 }
