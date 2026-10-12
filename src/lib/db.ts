@@ -68,11 +68,29 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return getPool().query<T>(text, params);
 }
 
-let migrationsCompleted = false;
+/**
+ * Ground-truth readiness check: queries schema_migrations directly rather
+ * than trusting in-process state. An in-memory "migrations done" flag was
+ * tried here before and removed — Next's standalone/Turbopack build can
+ * bundle Route Handlers and the instrumentation hook into separate chunks,
+ * each getting its own module-scope copy of this file, so a flag set by
+ * runMigrations() (running inside the instrumentation bundle) was never
+ * visible to the readiness route's bundle, even though migrations had
+ * genuinely completed — the pod never passed its readiness probe despite
+ * being fully functional. Querying the DB directly sidesteps that entirely.
+ * Ready once every .sql file in the migrations dir has a matching applied
+ * row. Fails closed — a DB error means "not ready", not ready.
+ */
+export async function migrationsAppliedInDb(): Promise<boolean> {
+  const migrationsDir = path.join(process.cwd(), "src/lib/migrations");
+  const files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql"));
+  if (files.length === 0) return true;
 
-/** Whether boot migrations have finished. Gates the readiness probe. */
-export function migrationsDone(): boolean {
-  return migrationsCompleted;
+  const res = await getPool().query<{ filename: string }>(
+    "SELECT filename FROM schema_migrations",
+  );
+  const applied = new Set(res.rows.map((r) => r.filename));
+  return files.every((f) => applied.has(f));
 }
 
 export async function runMigrations(): Promise<void> {
@@ -107,7 +125,6 @@ export async function runMigrations(): Promise<void> {
       throw err;
     }
   }
-  migrationsCompleted = true;
 }
 
 // ── Domain helpers ────────────────────────────────────────────────────────────
