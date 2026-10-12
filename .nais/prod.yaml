@@ -33,6 +33,10 @@ spec:
     sidecar:
       enabled: true
       autoLogin: true
+      autoLoginIgnorePaths:
+        # Slack interactivity webhook — Slack's servers can't follow the
+        # OAuth login redirect. Signature-verified in the route itself.
+        - /api/slack/interactions
   gcp:
     sqlInstances:
       - type: POSTGRES_18
