@@ -429,6 +429,8 @@ export interface AssigneeOption {
 export const DIGEST_SUPPRESS_ACTION = "digest_suppress";
 /** action_id for the Assign-to user picker; selected_user carries the UID. */
 export const DIGEST_ASSIGN_ACTION = "digest_assign";
+/** Sentinel select value: assignee releases the thread back to the channel. */
+export const DIGEST_RELEASE_VALUE = "release";
 
 /** Max items per digest message — Slack allows 50 blocks; we use 4/item. */
 const MAX_DIGEST_ITEMS = 12;
@@ -469,6 +471,10 @@ type DigestBlock =
               text: { type: "plain_text"; text: string };
               value: string;
             }>;
+            initial_option?: {
+              text: { type: "plain_text"; text: string };
+              value: string;
+            };
           }
       >;
     }
@@ -492,6 +498,8 @@ function buildDigestBlocks(
   parts: number,
   nowMs: number,
   assignees: AssigneeOption[] = [],
+  /** Pre-select this UID in the Assign select (used in assignment DMs). */
+  initialAssignee: string | null = null,
 ): { text: string; blocks: DigestBlock[] } {
   const partNote = parts > 1 ? ` (del ${part} av ${parts})` : "";
   const header: DigestBlock = {
@@ -527,14 +535,19 @@ function buildDigestBlocks(
       },
     ];
     if (assignees.length > 0) {
+      const options = assignees.map((a) => ({
+        text: { type: "plain_text" as const, text: a.label },
+        value: a.userId,
+      }));
+      const initial = initialAssignee
+        ? options.find((o) => o.value === initialAssignee)
+        : undefined;
       elements.push({
         type: "static_select",
         action_id: DIGEST_ASSIGN_ACTION,
         placeholder: { type: "plain_text", text: "Assign to…" },
-        options: assignees.map((a) => ({
-          text: { type: "plain_text", text: a.label },
-          value: a.userId,
-        })),
+        options,
+        ...(initial ? { initial_option: initial } : {}),
       });
     }
     blocks.push({
@@ -646,13 +659,28 @@ export async function dmAssignment(
   }
 
   const nowMs = Date.now();
-  const { blocks } = buildDigestBlocks([item], 1, 1, 1, nowMs, assignees);
+  // Assignee is pre-selected in the "Assign to…" select (obvious why this
+  // DM exists); "I don't know / release" is a first-class option that sends
+  // the thread back to the channel digest.
+  const dmAssignees: AssigneeOption[] = [
+    { userId: DIGEST_RELEASE_VALUE, label: "I don't know / release" },
+    ...assignees,
+  ];
+  const { blocks } = buildDigestBlocks(
+    [item],
+    1,
+    1,
+    1,
+    nowMs,
+    dmAssignees,
+    assigneeUserId,
+  );
   // Replace the digest header with an assignment intro.
   blocks[0] = {
     type: "section",
     text: {
       type: "mrkdwn",
-      text: `*Tildelt til deg* av <@${assignedBy}> — svar i tråden, eller videre-/supprimer under:`,
+      text: `*Tildelt til deg* av <@${assignedBy}> — svar i tråden, eller endre valget under:`,
     },
   };
   const text = `Tildelt til deg: ${item.authorLabel}: ${excerpt(item.text, 80)} — ${item.permalink}`;

@@ -345,6 +345,12 @@ export async function upsertThreadAction(
     });
 }
 
+export async function deleteThreadAction(messageTs: string): Promise<void> {
+  await getDb()
+    .delete(threadActions)
+    .where(eq(threadActions.messageTs, messageTs));
+}
+
 /**
  * Full thread_actions rows for the given ts list — the handled rule reads
  * actioned_at; re-nag targeting reads action + assignee_user_id.

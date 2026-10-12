@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import {
   deleteDigestMessagesForThreads,
+  deleteThreadAction,
   listDigestMessages,
   listIgnoreEmails,
   listIgnoreGroups,
@@ -10,6 +11,7 @@ import {
 import { getGroupMemberEmails } from "../../../../lib/auth";
 import {
   DIGEST_ASSIGN_ACTION,
+  DIGEST_RELEASE_VALUE,
   DIGEST_SUPPRESS_ACTION,
   dmAssignment,
   listAssigneeOptions,
@@ -142,6 +144,18 @@ export async function POST(req: Request): Promise<Response> {
         continue;
       }
 
+      // "I don't know / release" — clear the assignment; the thread
+      // re-enters the channel digest on the next scan's nag cycle.
+      if (assignee === DIGEST_RELEASE_VALUE) {
+        await deleteThreadAction(messageTs);
+        log({
+          event: "slack.thread_released",
+          message_ts: messageTs,
+          by: actor,
+        });
+        continue;
+      }
+
       await upsertThreadAction(messageTs, digestChannel, "assigned", actor, assignee);
       log({
         event: "slack.thread_assigned",
@@ -178,7 +192,7 @@ export async function POST(req: Request): Promise<Response> {
             authorLabel: row?.author_label ?? "?",
             imageUrl: row?.image_url ?? null,
           },
-          roster.filter((r) => r.userId !== assignee),
+          roster,
           actor,
         );
       } catch (err) {

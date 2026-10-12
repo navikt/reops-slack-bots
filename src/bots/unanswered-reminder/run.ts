@@ -372,7 +372,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
             authorLabel: labels.get(previewAuthor) ?? previewAuthor,
             imageUrl: a.msg.latestImage,
           },
-          assignees.filter((x) => x.userId !== a.assignee),
+          assignees,
           "reops-bot",
         );
         if (dmChannel) {

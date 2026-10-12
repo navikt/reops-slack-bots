@@ -58,6 +58,11 @@ detection remains — every environment runs `0000_baseline.sql` as a fresh
 install. If an old clone still has a `schema_migrations` table, drop it
 manually.
 
+Need to wipe prod again? `scripts/wipe-db.sh` — expects `.env.secrets` (repo
+root, gitignored) with `DB_URL` + `DB_PASS` from the Nais console, then
+proxies, drops the public schema, and restarts the pods. See the script
+header for the full trap list.
+
 The unanswered-reminder job wakes hourly; whether a message is due
 for a (re-)nag is driven by the `scan_window_days` / `min_age_hours` /
 `re_nag_hours` rows in `settings`. Grace-period math lives in
