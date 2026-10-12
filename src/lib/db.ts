@@ -151,9 +151,7 @@ export async function listIgnoreEmails(): Promise<string[]> {
     .from(ignorePersons)
     .where(eq(ignorePersons.kind, "person"));
   return rows.map((r) => r.email);
-}
-
-// ── Ignore groups (Team Catalog) ─────────────────────────────────────────────────────
+}// ── Ignore groups (Team Catalog) ─────────────────────────────────────────────────────
 
 export interface GroupRow {
   id: string;
@@ -330,35 +328,41 @@ export async function getTableCounts(): Promise<Array<{ table: string; rows: num
 
 // ── Thread actions (Ignore button) ───────────────────────────────────────────
 
-/** Mark a thread ignored (or re-mark: refreshes actioned_at). */
+/** Mark a thread suppressed (or re-mark: refreshes actioned_at). */
 export async function upsertThreadAction(
   messageTs: string,
   channelId: string,
   action: string,
   actorUserId: string,
+  assigneeUserId: string | null = null,
 ): Promise<void> {
   await getDb()
     .insert(threadActions)
-    .values({ messageTs, channelId, action, actorUserId })
+    .values({ messageTs, channelId, action, actorUserId, assigneeUserId })
     .onConflictDoUpdate({
       target: threadActions.messageTs,
-      set: { action, actorUserId, actionedAt: new Date(), channelId },
+      set: { action, actorUserId, assigneeUserId, actionedAt: new Date(), channelId },
     });
 }
 
 /**
- * actioned_at per thread for the given ts list — the handled rule compares
- * it against the thread's last reply ts.
+ * Full thread_actions rows for the given ts list — the handled rule reads
+ * actioned_at; re-nag targeting reads action + assignee_user_id.
  */
 export async function getThreadActions(
   messageTss: string[],
-): Promise<Map<string, Date>> {
+): Promise<Map<string, { actionedAt: Date; action: string; assigneeUserId: string | null }>> {
   if (messageTss.length === 0) return new Map();
   const rows = await getDb()
-    .select({ messageTs: threadActions.messageTs, actionedAt: threadActions.actionedAt })
+    .select()
     .from(threadActions)
     .where(inArray(threadActions.messageTs, messageTss));
-  return new Map(rows.map((r) => [r.messageTs, r.actionedAt]));
+  return new Map(
+    rows.map((r) => [
+      r.messageTs,
+      { actionedAt: r.actionedAt, action: r.action, assigneeUserId: r.assigneeUserId },
+    ]),
+  );
 }
 
 // ── Digest messages (reconciliation) ─────────────────────────────────────────

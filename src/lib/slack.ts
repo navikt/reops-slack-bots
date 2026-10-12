@@ -41,13 +41,20 @@ async function slackCall<T>(method: string, fn: (web: WebClient) => Promise<T>):
   } catch (err) {
     // WebAPIRateLimitedError exposes .retryAfter (seconds, parsed from the
     // Retry-After header); generic errors may carry raw headers instead.
-    const e = err as { retryAfter?: number; headers?: Record<string, string> };
+    const e = err as {
+      retryAfter?: number;
+      headers?: Record<string, string>;
+      // WebAPIPlatformError carries Slack's structured detail (e.g. which
+      // block failed validation) in data.response_metadata.messages.
+      data?: { response_metadata?: { messages?: string[] } };
+    };
     const retryAfter = e.retryAfter ?? e.headers?.["retry-after"] ?? null;
     logError({
       event: "slack.api_failed",
       method,
       duration_ms: Date.now() - start,
       retry_after_s: retryAfter,
+      detail: e.data?.response_metadata?.messages?.join("; ") ?? undefined,
       message: err instanceof Error ? err.message : String(err),
     });
     throw err;
@@ -276,16 +283,13 @@ export async function fetchOldUnsolvedMessages(
         m.permalink = buildPermalink(channelId, newest.ts);
         m.latestUser = newest.user ?? null;
         m.latestText = newest.text ?? "";
-        // Preview an attached image if the latest reply has one (thumb_360
-        // is Slack's pre-sized variant; url_private works because the bot
-        // token is sent with the request by Slack clients... actually no —
-        // url_private needs auth headers; permalink only. Use thumb URL when
-        // present, which Slack renders inline for the bot's own posts.
+        // Image attachments: Slack file URLs (thumb_*/url_private) are
+        // private and REJECTED in blocks (invalid_blocks) — we only record
+        // that an image exists; the digest shows a 📎 marker instead.
         const file = (newest.files ?? []).find((f) =>
           (f.mimetype ?? "").startsWith("image/"),
         );
-        m.latestImage =
-          file?.thumb_360 ?? file?.thumb_160 ?? file?.url_private ?? null;
+        m.latestImage = file ? "present" : null;
       }
     } catch (err) {
       // Missing reply data must not kill the scan — fall back to "no reply
@@ -413,8 +417,18 @@ export interface UnsolvedReminderItem {
   imageUrl: string | null;
 }
 
+/** One entry in the "Assign to…" roster — a team member who can own a
+ * thread (the ignore set: persons + group members). Static select options
+ * must stay ≤ Slack's per-menu cap; a team-sized roster is fine. */
+export interface AssigneeOption {
+  userId: string;
+  label: string;
+}
+
 /** action_id for the per-item Suppress button; value carries the thread ts. */
 export const DIGEST_SUPPRESS_ACTION = "digest_suppress";
+/** action_id for the Assign-to user picker; selected_user carries the UID. */
+export const DIGEST_ASSIGN_ACTION = "digest_assign";
 
 /** Max items per digest message — Slack allows 50 blocks; we use 4/item. */
 const MAX_DIGEST_ITEMS = 12;
@@ -435,16 +449,28 @@ type DigestBlock =
   | { type: "section"; text: { type: "mrkdwn"; text: string } }
   | {
       type: "context";
-      elements: Array<{ type: "mrkdwn" | "image"; text?: string; image_url?: string; alt_text?: string }>;
+      elements: Array<{ type: "mrkdwn"; text: string }>;
     }
   | {
       type: "actions";
-      elements: Array<{
-        type: "button";
-        text: { type: "plain_text"; text: string };
-        action_id: string;
-        value: string;
-      }>;
+      block_id?: string;
+      elements: Array<
+        | {
+            type: "button";
+            text: { type: "plain_text"; text: string };
+            action_id: string;
+            value: string;
+          }
+        | {
+            type: "static_select";
+            action_id: string;
+            placeholder: { type: "plain_text"; text: string };
+            options: Array<{
+              text: { type: "plain_text"; text: string };
+              value: string;
+            }>;
+          }
+      >;
     }
   | { type: "divider" };
 
@@ -465,6 +491,7 @@ function buildDigestBlocks(
   part: number,
   parts: number,
   nowMs: number,
+  assignees: AssigneeOption[] = [],
 ): { text: string; blocks: DigestBlock[] } {
   const partNote = parts > 1 ? ` (del ${part} av ${parts})` : "";
   const header: DigestBlock = {
@@ -480,28 +507,40 @@ function buildDigestBlocks(
         text: `*${m.authorLabel}* · ubesvart i ${formatAge(m.ts, nowMs)} · <${m.permalink}|åpne tråd>`,
       },
     });
+    const quoteText =
+      excerpt(m.text) + (m.imageUrl ? " _(📎 vedlegg — se tråden)_" : "");
     const quote: DigestBlock = {
       type: "context",
-      elements: [{ type: "mrkdwn", text: `>${excerpt(m.text)}` }],
+      elements: [{ type: "mrkdwn", text: `>${quoteText}` }],
     };
-    if (m.imageUrl) {
-      quote.elements.push({
-        type: "image",
-        image_url: m.imageUrl,
-        alt_text: "vedlegg",
+    blocks.push(quote);
+    // static_select pre-filtered to the handler roster (ignore set) —
+    // users_select would offer the whole workspace. selects carry no
+    // `value`, so the thread ts rides in the actions block's block_id
+    // (`digest_item_<ts>`) — the interactions payload echoes it back.
+    const elements: Extract<DigestBlock, { type: "actions" }>["elements"] = [
+      {
+        type: "button",
+        text: { type: "plain_text", text: "Suppress" },
+        action_id: DIGEST_SUPPRESS_ACTION,
+        value: m.ts,
+      },
+    ];
+    if (assignees.length > 0) {
+      elements.push({
+        type: "static_select",
+        action_id: DIGEST_ASSIGN_ACTION,
+        placeholder: { type: "plain_text", text: "Assign to…" },
+        options: assignees.map((a) => ({
+          text: { type: "plain_text", text: a.label },
+          value: a.userId,
+        })),
       });
     }
-    blocks.push(quote);
     blocks.push({
       type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Suppress" },
-          action_id: DIGEST_SUPPRESS_ACTION,
-          value: m.ts,
-        },
-      ],
+      block_id: `digest_item_${m.ts}`,
+      elements,
     });
     if (i < items.length - 1) blocks.push({ type: "divider" });
   }
@@ -520,6 +559,7 @@ function buildDigestBlocks(
 export async function postUnansweredDigest(
   channelId: string,
   items: UnsolvedReminderItem[],
+  assignees: AssigneeOption[] = [],
 ): Promise<Array<{ digestTs: string; items: UnsolvedReminderItem[] }>> {
   if (items.length === 0) return [];
 
@@ -538,6 +578,7 @@ export async function postUnansweredDigest(
       idx + 1,
       chunks.length,
       nowMs,
+      assignees,
     );
 
     const res = await slackCall("chat.postMessage", (web) =>
@@ -568,8 +609,73 @@ export async function postUnansweredDigest(
   return posted;
 }
 
-/** Deletes a previously posted digest message (replaced by a fresh one). */
-export async function deleteDigestMessage(
+/**
+ * Builds the "Assign to…" roster from raw emails: resolve to UIDs, attach
+ * display labels, sort alphabetically. Shared by the scan (digest posting)
+ * and the interactions webhook (DM renders).
+ */
+export async function listAssigneeOptions(
+  emails: string[],
+): Promise<AssigneeOption[]> {
+  const uids = [...(await resolveEmailsToUserIds(emails))];
+  const labels = await resolveUserLabels(uids);
+  return uids
+    .map((uid) => ({ userId: uid, label: labels.get(uid) ?? uid }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * DMs an assignee about a thread they now own: opens (or reuses) the DM
+ * channel via conversations.open, then posts the same preview blocks with
+ * Suppress + Assign controls. Returns the DM channel id for nag_log
+ * tracking, or null when the DM couldn't be opened (user deactivated etc).
+ */
+export async function dmAssignment(
+  assigneeUserId: string,
+  item: UnsolvedReminderItem,
+  assignees: AssigneeOption[],
+  assignedBy: string,
+): Promise<string | null> {
+  const opened = await slackCall("conversations.open", (web) =>
+    web.conversations.open({ users: assigneeUserId }),
+  );
+  const dmChannel = opened.channel?.id;
+  if (!opened.ok || !dmChannel) {
+    logError({ event: "slack.dm_open_failed", assignee: assigneeUserId });
+    return null;
+  }
+
+  const nowMs = Date.now();
+  const { blocks } = buildDigestBlocks([item], 1, 1, 1, nowMs, assignees);
+  // Replace the digest header with an assignment intro.
+  blocks[0] = {
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: `*Tildelt til deg* av <@${assignedBy}> — svar i tråden, eller videre-/supprimer under:`,
+    },
+  };
+  const text = `Tildelt til deg: ${item.authorLabel}: ${excerpt(item.text, 80)} — ${item.permalink}`;
+
+  const res = await slackCall("chat.postMessage", (web) =>
+    web.chat.postMessage({
+      channel: dmChannel,
+      text,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    }),
+  );
+  log({
+    event: "slack.assignment_dm_sent",
+    assignee: assigneeUserId,
+    thread_ts: item.ts,
+    ok: res.ok === true,
+  });
+  return dmChannel;
+}
+
+/** Deletes a previously posted digest message (replaced by a fresh one). */export async function deleteDigestMessage(
   channelId: string,
   digestTs: string,
 ): Promise<void> {
@@ -589,6 +695,7 @@ export async function updateUnansweredDigest(
   digestTs: string,
   remaining: UnsolvedReminderItem[],
   total: number,
+  assignees: AssigneeOption[] = [],
 ): Promise<void> {
   if (remaining.length === 0) {
     await slackCall("chat.delete", (web) =>
@@ -597,7 +704,7 @@ export async function updateUnansweredDigest(
     log({ event: "slack.digest_deleted", channel: channelId, ts: digestTs });
     return;
   }
-  const { text, blocks } = buildDigestBlocks(remaining, total, 1, 1, Date.now());
+  const { text, blocks } = buildDigestBlocks(remaining, total, 1, 1, Date.now(), assignees);
   await slackCall("chat.update", (web) =>
     // unfurl_* is valid on chat.update per Web API docs; the SDK's
     // ChatUpdateArguments type lags behind.

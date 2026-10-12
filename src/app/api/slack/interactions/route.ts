@@ -3,10 +3,16 @@ import { NextResponse } from "next/server";
 import {
   deleteDigestMessagesForThreads,
   listDigestMessages,
+  listIgnoreEmails,
+  listIgnoreGroups,
   upsertThreadAction,
 } from "../../../../lib/db";
+import { getGroupMemberEmails } from "../../../../lib/auth";
 import {
+  DIGEST_ASSIGN_ACTION,
   DIGEST_SUPPRESS_ACTION,
+  dmAssignment,
+  listAssigneeOptions,
   updateUnansweredDigest,
 } from "../../../../lib/slack";
 import { log, logError } from "../../../../lib/log";
@@ -57,7 +63,13 @@ export async function POST(req: Request): Promise<Response> {
 
   let payload: {
     type?: string;
-    actions?: Array<{ action_id?: string; value?: string }>;
+    actions?: Array<{
+      action_id?: string;
+      block_id?: string; // "digest_item_<thread_ts>" on our actions blocks
+      value?: string; // buttons
+      selected_user?: string; // users_select
+      selected_option?: { value?: string }; // static_select / overflow
+    }>;
     channel?: { id?: string };
     message?: { ts?: string };
     user?: { id?: string };
@@ -75,44 +87,110 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ ok: true });
   }
 
+  const actor = payload.user?.id ?? "unknown";
+  const digestChannel = payload.channel?.id ?? "";
+  const digestTs = payload.message?.ts;
+
+  /** Removes a thread's entry from the digest message it was clicked in. */
+  const removeFromDigest = async (messageTs: string) => {
+    if (!digestTs || !digestChannel) return;
+    try {
+      const tracked = await listDigestMessages();
+      const here = tracked.filter((r) => r.digest_ts === digestTs);
+      const remaining = here.filter((r) => r.message_ts !== messageTs);
+      await updateUnansweredDigest(
+        digestChannel,
+        digestTs,
+        remaining.map((r) => ({
+          ts: r.message_ts,
+          permalink: r.permalink,
+          text: r.text_excerpt,
+          authorLabel: r.author_label,
+          imageUrl: r.image_url,
+        })),
+        // Best-effort total for the header line.
+        tracked.length - here.length + remaining.length,
+      );
+      await deleteDigestMessagesForThreads([messageTs]);
+    } catch (err) {
+      logError({
+        event: "slack.digest_instant_update_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   for (const action of payload.actions) {
-    if (action.action_id !== DIGEST_SUPPRESS_ACTION || !action.value) continue;
-    const messageTs = action.value;
-    const digestChannel = payload.channel?.id ?? "";
-    const digestTs = payload.message?.ts;
-    const actor = payload.user?.id ?? "unknown";
+    if (action.action_id === DIGEST_SUPPRESS_ACTION && action.value) {
+      const messageTs = action.value;
+      // thread_actions keys on message_ts only; the digest channel is stored
+      // for traceability, not because the thread lives there (it doesn't).
+      await upsertThreadAction(messageTs, digestChannel, "suppressed", actor);
+      log({ event: "slack.thread_suppressed", message_ts: messageTs, by: actor });
+      await removeFromDigest(messageTs);
+      continue;
+    }
 
-    // thread_actions keys on message_ts only; the digest channel is stored
-    // for traceability, not because the thread lives there (it doesn't).
-    await upsertThreadAction(messageTs, digestChannel, "suppressed", actor);
-    log({ event: "slack.thread_suppressed", message_ts: messageTs, by: actor });
+    if (action.action_id === DIGEST_ASSIGN_ACTION) {
+      const selected = action.selected_user ?? action.selected_option?.value;
+      // thread ts comes from the enclosing actions block's block_id
+      // (`digest_item_<ts>`) — users_select has no `value` field.
+      const messageTs = action.block_id?.replace(/^digest_item_/, "") ?? "";
+      const assignee = selected;
+      if (!messageTs || !assignee) {
+        logError({ event: "slack.assign_no_block_id", block_id: action.block_id });
+        continue;
+      }
 
-    // Instant feedback: remove the link from this digest message now.
-    if (digestTs && digestChannel) {
+      await upsertThreadAction(messageTs, digestChannel, "assigned", actor, assignee);
+      log({
+        event: "slack.thread_assigned",
+        message_ts: messageTs,
+        assignee,
+        by: actor,
+      });
+
+      // DM the assignee with the same preview + controls (Suppress +
+      // re-assign picker, roster minus the new assignee).
       try {
-        const tracked = await listDigestMessages();
-        const here = tracked.filter((r) => r.digest_ts === digestTs);
-        const remaining = here.filter((r) => r.message_ts !== messageTs);
-        await updateUnansweredDigest(
-          digestChannel,
-          digestTs,
-          remaining.map((r) => ({
-            ts: r.message_ts,
-            permalink: r.permalink,
-            text: r.text_excerpt,
-            authorLabel: r.author_label,
-            imageUrl: r.image_url,
-          })),
-          // Best-effort total for the header line.
-          tracked.length - here.length + remaining.length,
+        const row = (await listDigestMessages()).find((r) => r.message_ts === messageTs);
+        const groups = await listIgnoreGroups();
+        const groupEmails = (
+          await Promise.all(
+            groups.map(async (g) => {
+              try {
+                return await getGroupMemberEmails(g.kind, g.id);
+              } catch {
+                return [] as string[];
+              }
+            }),
+          )
+        ).flat();
+        const roster = await listAssigneeOptions([
+          ...new Set([...(await listIgnoreEmails()), ...groupEmails]),
+        ]);
+        await dmAssignment(
+          assignee,
+          {
+            ts: messageTs,
+            permalink: row?.permalink ?? "",
+            text: row?.text_excerpt ?? "",
+            authorLabel: row?.author_label ?? "?",
+            imageUrl: row?.image_url ?? null,
+          },
+          roster.filter((r) => r.userId !== assignee),
+          actor,
         );
-        await deleteDigestMessagesForThreads([messageTs]);
       } catch (err) {
         logError({
-          event: "slack.digest_instant_update_failed",
+          event: "slack.assignment_dm_failed",
+          message_ts: messageTs,
+          assignee,
           message: err instanceof Error ? err.message : String(err),
         });
       }
+
+      await removeFromDigest(messageTs);
     }
   }
 

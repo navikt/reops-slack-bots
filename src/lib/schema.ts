@@ -89,8 +89,10 @@ export const nagLog = pgTable("nag_log", {
 export const threadActions = pgTable("thread_actions", {
   messageTs: text("message_ts").primaryKey(),
   channelId: text("channel_id").notNull(),
-  action: text("action").notNull(), // 'ignored' (assignments land here later)
+  action: text("action").notNull(), // 'suppressed' | 'assigned'
   actorUserId: text("actor_user_id").notNull(), // Slack UID of button presser
+  /** Set when action = 'assigned' — who now owns the thread. */
+  assigneeUserId: text("assignee_user_id"),
   actionedAt: timestamp("actioned_at", { withTimezone: true, mode: "date" })
     .notNull()
     .defaultNow(),

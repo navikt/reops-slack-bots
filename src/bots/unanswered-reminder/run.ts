@@ -12,9 +12,11 @@ import {
 } from "../../lib/db";
 import {
   deleteDigestMessage,
+  dmAssignment,
   expandIgnoreSet,
   fetchOldUnsolvedMessages,
   isThreadHandled,
+  listAssigneeOptions,
   postUnansweredDigest,
   resolveUserLabels,
   updateUnansweredDigest,
@@ -130,27 +132,49 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
   }
 
   // Handled rule (see isThreadHandled): team reply last, manual Suppress,
-  // or :solved: recency — re-openable conversations. Suppress marks come
-  // from thread_actions (digest Suppress button), compared vs last reply ts.
+  // or :solved: recency — re-openable conversations. Marks live in
+  // thread_actions (digest buttons), compared against last reply ts.
+  // Assigned threads leave the channel digest entirely; their re-nags go to
+  // the assignee's DM instead (see below).
   const actionsByTs = await getThreadActions(candidates.map((m) => m.ts));
 
   const open: typeof candidates = [];
-  const handledTs: string[] = [];
+  const assignedOpen: Array<{ msg: (typeof candidates)[number]; assignee: string }> = [];
   for (const m of candidates) {
     const lastReplyUser = m.latestReplies[m.latestReplies.length - 1]?.user ?? null;
-    const ignoredAt = actionsByTs.get(m.ts);
+    const mark = actionsByTs.get(m.ts);
+
+    // Assignment is a routing decision, not a handled state: the thread is
+    // out of the channel digest while the assignee owns it. New thread
+    // activity newer than the assignment re-opens it to the CHANNEL again
+    // (the assignee clearly didn't close it out).
+    if (mark?.action === "assigned" && mark.assigneeUserId) {
+      const newestReplyTs = Math.max(0, ...m.latestReplies.map((r) => r.ts));
+      if (mark.actionedAt.getTime() / 1000 >= newestReplyTs) {
+        assignedOpen.push({ msg: m, assignee: mark.assigneeUserId });
+        logDebug({
+          event: "bot.decision",
+          ts: m.ts,
+          verdict: "skip",
+          why: `assigned to ${mark.assigneeUserId} — DM re-nags, channel digest exempt`,
+          last_reply_user: lastReplyUser,
+        });
+        continue;
+      }
+      // stale assignment — falls through to normal handling below
+    }
+
     const handled = isThreadHandled(
-      { ...m, ignoredAt: ignoredAt ? ignoredAt.getTime() / 1000 : null },
+      { ...m, ignoredAt: mark ? mark.actionedAt.getTime() / 1000 : null },
       ignoreSet,
     );
     if (handled) {
-      handledTs.push(m.ts);
       logDebug({
         event: "bot.decision",
         ts: m.ts,
         verdict: "skip",
-        why: ignoredAt
-          ? "handled (ignored via digest button)"
+        why: mark
+          ? "handled (suppressed via digest button)"
           : "handled (team reply last, or :solved: newer than last non-team activity)",
         last_reply_user: lastReplyUser,
       });
@@ -174,7 +198,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
   const recentlyNagged = ignoreReNagCooldown
     ? new Set<string>()
     : await getRecentlyNaggedTs(
-        open.map((m) => m.ts),
+        [...open.map((m) => m.ts), ...assignedOpen.map((a) => a.msg.ts)],
         reNagHours,
       );
 
@@ -217,6 +241,10 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
   // shrink existing digests in place (handled threads drop off).
   const trackedBefore = await listDigestMessages();
 
+  // Assignable roster for "Assign to…": the handler set (ignore persons +
+  // group member emails) resolved to UIDs + labels.
+  const assignees = await listAssigneeOptions(allEmails);
+
   if (toNag.length > 0) {
     try {
       for (const row of new Map(trackedBefore.map((r) => [r.digest_ts, r])).values()) {
@@ -242,7 +270,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
           imageUrl: m.latestImage,
         };
       });
-      const posted = await postUnansweredDigest(targetChannel, items);
+      const posted = await postUnansweredDigest(targetChannel, items, assignees);
       await recordDigestMessages(
         posted.flatMap((p) =>
           p.items.map((item) => ({
@@ -304,6 +332,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
               };
             }),
             open.length,
+            assignees,
           );
           stale.push(
             ...info.rows
@@ -318,6 +347,46 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
         event: "bot.digest_reconcile_failed",
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  // Assigned threads: re-nag the assignee in DM after the cooldown instead
+  // of the channel. nag_log carries the DM channel id for these rows.
+  const assignedDue = ignoreReNagCooldown
+    ? assignedOpen
+    : assignedOpen.filter((a) => !recentlyNagged.has(a.msg.ts));
+  if (assignedDue.length > 0) {
+    const labels = await resolveUserLabels(
+      assignedDue.map((a) => a.msg.latestUser ?? a.msg.user),
+    );
+    for (const a of assignedDue) {
+      try {
+        const hasReply = a.msg.latestUser !== null;
+        const previewAuthor = a.msg.latestUser ?? a.msg.user;
+        const dmChannel = await dmAssignment(
+          a.assignee,
+          {
+            ts: a.msg.ts,
+            permalink: a.msg.permalink,
+            text: hasReply ? (a.msg.latestText ?? "") : a.msg.text,
+            authorLabel: labels.get(previewAuthor) ?? previewAuthor,
+            imageUrl: a.msg.latestImage,
+          },
+          assignees.filter((x) => x.userId !== a.assignee),
+          "reops-bot",
+        );
+        if (dmChannel) {
+          await upsertNagLog(a.msg.ts, dmChannel);
+          log({ event: "bot.assignment_renagged", ts: a.msg.ts, assignee: a.assignee });
+        }
+      } catch (err) {
+        logError({
+          event: "bot.assignment_renag_failed",
+          ts: a.msg.ts,
+          assignee: a.assignee,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "thread_actions" ADD COLUMN "assignee_user_id" text;

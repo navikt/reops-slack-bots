@@ -26,7 +26,10 @@ A message counts as unanswered only if ALL of these hold:
 - not handled: team last-reply, a manual **Suppress** mark from the digest
   button (newer than the last reply), or `:solved:` (parent or reply, set by
   anyone) — recency decides, so a follow-up question from a non-team member
-  re-opens the thread (logic in `src/lib/thread-handled.ts`, unit-tested)
+  re-opens the thread (logic in `src/lib/thread-handled.ts`, unit-tested).
+  **Assign to…** routes a thread out of the channel digest to a team
+  member's DM; re-nags go there until the thread gets newer activity, which
+  re-opens it to the channel.
 - it hasn't been nagged within the `re_nag_hours` cooldown (see `nag_log`)
 
 ## Architecture
