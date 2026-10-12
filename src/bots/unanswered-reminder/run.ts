@@ -49,6 +49,14 @@ export async function runUnansweredReminder(): Promise<void> {
     return;
   }
 
+  // Smart work-hours awareness (advanced setting): when enabled (default),
+  // grace for messages posted outside 09:00-16:30 Mon-Fri jumps to the next
+  // workday opening before counting min_age_hours. Disable to test/debug
+  // outside work hours, where that jump would otherwise hide messages for
+  // up to a full day regardless of min_age_hours.
+  const workHoursAwareRaw = (await getSetting("work_hours_aware")) ?? "true";
+  const workHoursAware = workHoursAwareRaw !== "false";
+
   const sourceChannel =
     (await getSetting("unanswered_reminder.source_channel_id")) ??
     process.env.RESEARCHOPS_CHANNEL_ID;
@@ -94,6 +102,7 @@ export async function runUnansweredReminder(): Promise<void> {
     sourceChannel,
     scanWindowDays,
     minAgeHours,
+    workHoursAware,
   );
 
   const candidates = unsolved.filter((m) => !ignoreSet.has(m.user));
@@ -167,6 +176,7 @@ export async function runUnansweredReminder(): Promise<void> {
     to_nag: toNag.length,
     scan_window_days: scanWindowDays,
     re_nag_hours: reNagHours,
+    work_hours_aware: workHoursAware,
   });
 
   await setSetting(

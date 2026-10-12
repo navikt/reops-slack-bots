@@ -19,12 +19,13 @@ export async function GET(req: Request): Promise<Response> {
     return NextResponse.json({ error: auth.status }, { status });
   }
 
-  const [frozen, scanWindowDays, minAgeHours, reNagHours, ignoreList, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminIdents] =
+  const [frozen, scanWindowDays, minAgeHours, reNagHours, workHoursAware, ignoreList, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminIdents] =
     await Promise.all([
       getSetting("frozen"),
       getSetting("scan_window_days"),
       getSetting("min_age_hours"),
       getSetting("re_nag_hours"),
+      getSetting("work_hours_aware"),
       listIgnoreEntries(),
       getSetting("unanswered_reminder.source_channel_id"),
       getSetting("unanswered_reminder.target_channel_id"),
@@ -86,6 +87,7 @@ export async function GET(req: Request): Promise<Response> {
     scanWindowDays: Number.parseInt(scanWindowDays ?? "14", 10),
     minAgeHours: Number.parseInt(minAgeHours ?? "1", 10),
     reNagHours: Number.parseFloat(reNagHours ?? String(7 * 24)),
+    workHoursAware: (workHoursAware ?? "true") !== "false",
     ignoreList: ignoreList.map((r) => ({
       id: r.id,
       kind: r.kind,

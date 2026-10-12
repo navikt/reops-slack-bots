@@ -17,6 +17,7 @@ export async function POST(req: Request): Promise<Response> {
     scanWindowDays?: number;
     minAgeHours?: number;
     reNagHours?: number;
+    workHoursAware?: boolean;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   };
@@ -56,6 +57,16 @@ export async function POST(req: Request): Promise<Response> {
     }
     await setSetting("re_nag_hours", String(hours));
     log({ event: "admin.settings_changed", key: "re_nag_hours", value: String(hours), by: auth.user.navIdent });
+  }
+
+  if (typeof body.workHoursAware === "boolean") {
+    await setSetting("work_hours_aware", body.workHoursAware ? "true" : "false");
+    log({
+      event: "admin.settings_changed",
+      key: "work_hours_aware",
+      value: String(body.workHoursAware),
+      by: auth.user.navIdent,
+    });
   }
 
   // Channel pickers: null/empty string clears the setting (job skips until set).

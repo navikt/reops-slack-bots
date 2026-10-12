@@ -191,6 +191,7 @@ export async function fetchOldUnsolvedMessages(
   channelId: string,
   olderThanDays: number,
   graceHours: number,
+  workHoursAware = true,
 ): Promise<UnsolvedMessage[]> {
   const self = await getSelfIdentity();
   const nowS = Date.now() / 1000;
@@ -218,7 +219,7 @@ export async function fetchOldUnsolvedMessages(
       if (botId === self.botId || msg.user === self.userId) continue;
 
       // Still inside its (work-hours aware) grace period — too fresh to nag.
-      if (graceEligibleTs(msg.ts, graceHours) > nowS) continue;
+      if (graceEligibleTs(msg.ts, graceHours, workHoursAware) > nowS) continue;
 
       // history embeds the 3 newest replies inline — enough to apply the
       // handled rule without a conversations.replies call. The SDK type
@@ -257,20 +258,28 @@ export async function fetchOldUnsolvedMessages(
 
 /**
  * Resolves team emails to Slack user IDs via users.lookupByEmail (requires
- * users:read.email scope). Cached for the process lifetime — membership
- * drift is picked up on restart / hourly re-expansion, both fine.
- * Unknown emails are skipped with a debug log, not fatal.
+ * users:read + users:read.email scopes). Cached with a TTL matching the
+ * hourly scan cadence — real answers (found or genuinely not-found) are
+ * reused for up to EMAIL_CACHE_TTL_MS so new team members get picked up
+ * within about an hour, not only on process restart.
+ *
+ * Transient failures (rate limit, timeout, missing_scope, etc.) are never
+ * cached — those say nothing about the email itself, only that the call
+ * broke. Caching them would silently and permanently exclude someone from
+ * the ignore set the moment Slack hiccups once.
  */
-const emailToUserCache = new Map<string, string | null>();
+const EMAIL_CACHE_TTL_MS = 60 * 60 * 1000;
+const emailToUserCache = new Map<string, { uid: string | null; cachedAt: number }>();
 
 export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<string>> {
   const ids = new Set<string>();
+  const now = Date.now();
 
   for (const email of emails) {
     const key = email.toLowerCase();
-    if (emailToUserCache.has(key)) {
-      const cached = emailToUserCache.get(key);
-      if (cached) ids.add(cached);
+    const cached = emailToUserCache.get(key);
+    if (cached && now - cached.cachedAt < EMAIL_CACHE_TTL_MS) {
+      if (cached.uid) ids.add(cached.uid);
       continue;
     }
     try {
@@ -278,7 +287,7 @@ export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<stri
         web.users.lookupByEmail({ email }),
       );
       const uid = res.user?.id ?? null;
-      emailToUserCache.set(key, uid);
+      emailToUserCache.set(key, { uid, cachedAt: now });
       if (uid) {
         ids.add(uid);
         logDebug({ event: "slack.email_resolved", email, user: uid });
@@ -286,7 +295,10 @@ export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<stri
         logDebug({ event: "slack.email_unresolved", email });
       }
     } catch (err) {
-      emailToUserCache.set(key, null);
+      // Do NOT cache — a transient API failure is not a verdict on the
+      // email. Fall back to a stale-but-real cached answer if we have one,
+      // so one bad call doesn't un-ignore someone we previously resolved.
+      if (cached?.uid) ids.add(cached.uid);
       logDebug({
         event: "slack.email_lookup_failed",
         email,

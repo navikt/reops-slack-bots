@@ -92,3 +92,15 @@ void test("grace: zero grace outside hours → next opening", () => {
   const eligible = new Date(graceEligibleTs(ts(posted), 0) * 1000);
   assert.equal(eligible.getTime(), local(2026, 10, 7, 9, 0).getTime()); // Wed 09:00
 });
+
+void test("grace: workHoursAware=false → plain wall-clock even outside hours", () => {
+  const posted = local(2026, 10, 6, 22, 0); // Tue 22:00
+  const eligible = new Date(graceEligibleTs(ts(posted), 1, false) * 1000);
+  assert.equal(eligible.getTime(), local(2026, 10, 6, 23, 0).getTime()); // same-day +1h, no next-workday jump
+});
+
+void test("grace: workHoursAware=false on weekend → plain wall-clock", () => {
+  const posted = local(2026, 10, 10, 12, 0); // Saturday
+  const eligible = new Date(graceEligibleTs(ts(posted), 0, false) * 1000);
+  assert.equal(eligible.getTime(), posted.getTime()); // eligible immediately, no Monday jump
+});

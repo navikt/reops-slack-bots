@@ -77,6 +77,7 @@ interface AdminState {
   scanWindowDays: number;
   minAgeHours: number;
   reNagHours: number;
+  workHoursAware: boolean;
   ignoreList: IgnoreEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
@@ -504,6 +505,7 @@ export function AdminClient() {
     scanWindowDays?: number;
     minAgeHours?: number;
     reNagHours?: number;
+    workHoursAware?: boolean;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   }) => {
@@ -1164,6 +1166,16 @@ export function AdminClient() {
                     test digest" sends a fake digest to the reminder channel to
                     verify wiring.
                   </BodyShort>
+
+                  <Switch
+                    checked={state.workHoursAware}
+                    onChange={(e) =>
+                      void saveSettings({ workHoursAware: e.target.checked })
+                    }
+                    description="When on, the grace period for messages posted outside Mon–Fri 09:00–16:30 jumps to the next workday opening before counting. Turn off to test/debug outside work hours — grace becomes plain wall-clock time instead."
+                  >
+                    Smart work-hours awareness
+                  </Switch>
                   {state.frozen ? (
                     <BodyShort textColor="subtle">
                       Bot is off — turn it on to run a scan or post a test

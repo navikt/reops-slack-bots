@@ -59,9 +59,21 @@ export function nextWorkStart(d: Date): Date {
 /**
  * When a Slack message becomes nag-worthy, in unix seconds (fractional,
  * matching Slack ts arithmetic). `postedTs` is the Slack message ts.
+ *
+ * `workHoursAware` toggles the next-workday-09:00 jump for messages posted
+ * outside 09:00-16:30 Mon-Fri. When false, grace is pure wall-clock
+ * (postedAt + graceHours) — useful for testing outside work hours, where the
+ * work-hours-aware jump would otherwise push eligibility to the next workday
+ * regardless of graceHours. Controlled by the `work_hours_aware` setting
+ * (see /admin advanced), defaults to true in production use.
  */
-export function graceEligibleTs(postedTs: string, graceHours: number): number {
+export function graceEligibleTs(
+  postedTs: string,
+  graceHours: number,
+  workHoursAware = true,
+): number {
   const posted = new Date(Number.parseFloat(postedTs) * 1000);
-  const clockStart = isWithinWorkHours(posted) ? posted : nextWorkStart(posted);
+  const clockStart =
+    !workHoursAware || isWithinWorkHours(posted) ? posted : nextWorkStart(posted);
   return (clockStart.getTime() + graceHours * 60 * 60 * 1000) / 1000;
 }
