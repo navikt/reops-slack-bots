@@ -6,15 +6,18 @@ import {
   BodyShort,
   Box,
   Button,
+  CopyButton,
   ErrorMessage,
   ExpansionCard,
   Heading,
+  HelpText,
   HStack,
   List,
   Loader,
   Select,
   Switch,
   Table,
+  Tag,
   VStack,
 } from "@navikt/ds-react";
 import { TrashIcon } from "@navikt/aksel-icons";
@@ -132,6 +135,52 @@ const RE_NAG_OPTIONS: Array<{ hours: number; label: string }> = [
   { hours: 168, label: "7 days" },
   { hours: 336, label: "14 days" },
 ];
+
+/** Looks up a channel ID in the joined-channels list; falls back to the raw ID. */
+function channelLabel(
+  channels: JoinedChannel[],
+  id: string | null,
+): { name: string | null; isPrivate: boolean } {
+  if (!id) return { name: null, isPrivate: false };
+  const found = channels.find((c) => c.id === id);
+  return { name: found?.name ?? null, isPrivate: found?.isPrivate ?? false };
+}
+
+/** Inline channel display: "#general" (or lock) with the raw ID one click away. */
+function ChannelChip({
+  channels,
+  id,
+}: {
+  channels: JoinedChannel[];
+  id: string | null;
+}) {
+  if (!id) return <BodyShort textColor="subtle" size="small">—</BodyShort>;
+  const { name, isPrivate } = channelLabel(channels, id);
+  return (
+    <HStack gap="space-4" align="center" wrap={false}>
+      <BodyShort size="small">
+        {name ? `${isPrivate ? "🔒 " : "#"}${name}` : id}
+      </BodyShort>
+      <CopyButton
+        copyText={id}
+        size="xsmall"
+        title={`Copy channel ID ${id}`}
+      />
+    </HStack>
+  );
+}
+
+/** Compact ID chip — monospace-ish subtle text + copy button. */
+function IdChip({ value, title }: { value: string; title?: string }) {
+  return (
+    <HStack gap="space-4" align="center" wrap={false}>
+      <BodyShort size="small" textColor="subtle">
+        {value}
+      </BodyShort>
+      <CopyButton copyText={value} size="xsmall" title={title ?? `Copy ${value}`} />
+    </HStack>
+  );
+}
 
 function GroupTableRow({
   group,
@@ -1248,58 +1297,320 @@ export function AdminClient() {
                     <ExpansionCard.Content>
                       <VStack gap="space-16" align="start">
                         {state.you && (
-                          <div>
+                          <div style={{ width: "100%" }}>
                             <Heading level="5" size="xsmall" spacing>
                               You
                             </Heading>
-                            <List size="small">
-                              <List.Item>
-                                {state.you.navIdent}
-                                {state.you.email
-                                  ? ` · ${state.you.email}`
-                                  : " · no email (dev bypass?)"}
-                              </List.Item>
-                              <List.Item>
-                                Slack user:{" "}
-                                {state.you.slackUserId ?? "unresolved"}
-                                {state.you.slackUserId &&
-                                  (state.you.ignored
-                                    ? " · in ignore set — your replies mark threads handled"
-                                    : " · NOT in ignore set — your replies won't mark threads handled")}
-                              </List.Item>
-                            </List>
+                            <Table size="small">
+                              <Table.Body>
+                                <Table.Row>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    Nav ident
+                                  </Table.HeaderCell>
+                                  <Table.DataCell className="tableCell">
+                                    <IdChip
+                                      value={state.you.navIdent}
+                                      title="Copy Nav ident"
+                                    />
+                                  </Table.DataCell>
+                                </Table.Row>
+                                <Table.Row>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    Email
+                                  </Table.HeaderCell>
+                                  <Table.DataCell className="tableCell">
+                                    {state.you.email ? (
+                                      <IdChip
+                                        value={state.you.email}
+                                        title="Copy email"
+                                      />
+                                    ) : (
+                                      <HStack gap="space-4" align="center">
+                                        <BodyShort
+                                          textColor="subtle"
+                                          size="small"
+                                        >
+                                          none
+                                        </BodyShort>
+                                        <HelpText
+                                          title="Why is email missing?"
+                                        >
+                                          The token claims carried no email —
+                                          typical for dev bypass login. Slack
+                                          UID resolution is skipped.
+                                        </HelpText>
+                                      </HStack>
+                                    )}
+                                  </Table.DataCell>
+                                </Table.Row>
+                                <Table.Row>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    Slack user
+                                  </Table.HeaderCell>
+                                  <Table.DataCell className="tableCell">
+                                    {state.you.slackUserId ? (
+                                      <IdChip
+                                        value={state.you.slackUserId}
+                                        title="Copy Slack user ID"
+                                      />
+                                    ) : (
+                                      <BodyShort textColor="subtle" size="small">
+                                        unresolved
+                                      </BodyShort>
+                                    )}
+                                  </Table.DataCell>
+                                </Table.Row>
+                                <Table.Row>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    <HStack gap="space-4" align="center">
+                                      In ignore set
+                                      <HelpText
+                                        title="What does this mean?"
+                                      >
+                                        Your replies mark a thread handled only
+                                        if your Slack user is in the ignore
+                                        set (persons + group members).
+                                      </HelpText>
+                                    </HStack>
+                                  </Table.HeaderCell>
+                                  <Table.DataCell className="tableCell">
+                                    {state.you.slackUserId ? (
+                                      state.you.ignored ? (
+                                        <Tag
+                                          variant="moderate"
+                                          data-color="success"
+                                          size="small"
+                                        >
+                                          Yes — your replies mark threads handled
+                                        </Tag>
+                                      ) : (
+                                        <Tag
+                                          variant="moderate"
+                                          data-color="warning"
+                                          size="small"
+                                        >
+                                          No — your replies don't count
+                                        </Tag>
+                                      )
+                                    ) : (
+                                      <BodyShort textColor="subtle" size="small">
+                                        unknown
+                                      </BodyShort>
+                                    )}
+                                  </Table.DataCell>
+                                </Table.Row>
+                              </Table.Body>
+                            </Table>
                           </div>
                         )}
 
-                        <div>
+                        <div style={{ width: "100%" }}>
                           <Heading level="5" size="xsmall" spacing>
                             Effective config
                           </Heading>
-                          <List size="small">
-                            <List.Item>
-                              frozen: {String(state.frozen)}
-                            </List.Item>
-                            <List.Item>
-                              scan window: {state.scanWindowDays} days · grace:{" "}
-                              {state.minAgeHours}h · re-remind:{" "}
-                              {state.reNagHours}h · work-hours aware:{" "}
-                              {String(state.workHoursAware)}
-                            </List.Item>
-                            <List.Item>
-                              source channel: {state.sourceChannelId ?? "—"} ·
-                              target channel: {state.targetChannelId ?? "—"}
-                            </List.Item>
-                            {state.channelsError && (
-                              <List.Item>
-                                channel list error: {state.channelsError}
-                              </List.Item>
-                            )}
-                          </List>
+                          <Table size="small">
+                            <Table.Body>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  <HStack gap="space-4" align="center">
+                                    Frozen
+                                    <HelpText
+                                      title="What is frozen?"
+                                    >
+                                      When on, the hourly job logs
+                                      "bot.skipped (frozen)" and posts nothing.
+                                      Use it to pause reminders without
+                                      undeploying.
+                                    </HelpText>
+                                  </HStack>
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  {state.frozen ? (
+                                    <Tag
+                                      variant="moderate"
+                                      data-color="danger"
+                                      size="small"
+                                    >
+                                      Frozen — bot is paused
+                                    </Tag>
+                                  ) : (
+                                    <Tag
+                                      variant="moderate"
+                                      data-color="success"
+                                      size="small"
+                                    >
+                                      Running
+                                    </Tag>
+                                  )}
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  <HStack gap="space-4" align="center">
+                                    Scan window
+                                    <HelpText
+                                      title="scan_window_days"
+                                    >
+                                      Messages older than this are ignored,
+                                      even if still unanswered.
+                                    </HelpText>
+                                  </HStack>
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  <BodyShort size="small">
+                                    {state.scanWindowDays}{" "}
+                                    {state.scanWindowDays === 1 ? "day" : "days"}
+                                  </BodyShort>
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  <HStack gap="space-4" align="center">
+                                    Grace period
+                                    <HelpText title="min_age_hours">
+                                      A message must be this old before it can
+                                      appear in a digest. With work-hours
+                                      awareness on, evening/weekend posts wait
+                                      until the next workday opening.
+                                    </HelpText>
+                                  </HStack>
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  <BodyShort size="small">
+                                    {state.minAgeHours}{" "}
+                                    {state.minAgeHours === 1 ? "hour" : "hours"}
+                                  </BodyShort>
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  <HStack gap="space-4" align="center">
+                                    Re-remind after
+                                    <HelpText title="re_nag_hours">
+                                      Cooldown before a message is included in
+                                      a fresh digest. nag_log rows younger
+                                      than this suppress a re-post.
+                                    </HelpText>
+                                  </HStack>
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  <BodyShort size="small">
+                                    {state.reNagHours}{" "}
+                                    {state.reNagHours === 1 ? "hour" : "hours"}
+                                  </BodyShort>
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  Work-hours aware
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  {state.workHoursAware ? (
+                                    <Tag
+                                      variant="moderate"
+                                      data-color="info"
+                                      size="small"
+                                    >
+                                      On — Mon–Fri 09:00–16:30
+                                    </Tag>
+                                  ) : (
+                                    <Tag
+                                      variant="moderate"
+                                      data-color="neutral"
+                                      size="small"
+                                    >
+                                      Off — wall-clock
+                                    </Tag>
+                                  )}
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  Source channel
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  <ChannelChip
+                                    channels={state.channels}
+                                    id={state.sourceChannelId}
+                                  />
+                                </Table.DataCell>
+                              </Table.Row>
+                              <Table.Row>
+                                <Table.HeaderCell
+                                  scope="row"
+                                  className="tableCell"
+                                >
+                                  Target channel
+                                </Table.HeaderCell>
+                                <Table.DataCell className="tableCell">
+                                  <ChannelChip
+                                    channels={state.channels}
+                                    id={state.targetChannelId}
+                                  />
+                                </Table.DataCell>
+                              </Table.Row>
+                              {state.channelsError && (
+                                <Table.Row>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    Channel list error
+                                  </Table.HeaderCell>
+                                  <Table.DataCell className="tableCell">
+                                    <BodyShort size="small" textColor="subtle">
+                                      {state.channelsError}
+                                    </BodyShort>
+                                  </Table.DataCell>
+                                </Table.Row>
+                              )}
+                            </Table.Body>
+                          </Table>
                         </div>
 
-                        <div>
+                        <div style={{ width: "100%" }}>
                           <Heading level="5" size="xsmall" spacing>
-                            Reminder suppression ({state.nagSuppressed.length})
+                            <HStack gap="space-4" align="center">
+                              Reminder suppression ({state.nagSuppressed.length})
+                              <HelpText
+                                title="What is this?"
+                              >
+                                Rows in nag_log whose next-eligible timestamp
+                                is still in the future. These threads will NOT
+                                be re-posted in the next digest — they are
+                                inside the re-remind cooldown.
+                              </HelpText>
+                            </HStack>
                           </Heading>
                           {state.nagSuppressed.length === 0 ? (
                             <BodyShort textColor="subtle" size="small">
@@ -1307,25 +1618,71 @@ export function AdminClient() {
                               eligible for the next digest.
                             </BodyShort>
                           ) : (
-                            <List size="small">
-                              {state.nagSuppressed.map((n) => (
-                                <List.Item key={n.message_ts}>
-                                  {n.channel_id} · {n.message_ts} · eligible{" "}
-                                  {new Date(n.next_eligible_at).toLocaleString(
-                                    "en-GB",
-                                    { dateStyle: "short", timeStyle: "short" },
-                                  )}
-                                </List.Item>
-                              ))}
-                            </List>
+                            <Table size="small">
+                              <Table.Header>
+                                <Table.Row>
+                                  <Table.ColumnHeader textSize="small">
+                                    Channel
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    Message ts
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    Eligible again
+                                  </Table.ColumnHeader>
+                                </Table.Row>
+                              </Table.Header>
+                              <Table.Body>
+                                {state.nagSuppressed.map((n) => (
+                                  <Table.Row key={n.message_ts}>
+                                    <Table.DataCell className="tableCell">
+                                      <ChannelChip
+                                        channels={state.channels}
+                                        id={n.channel_id}
+                                      />
+                                    </Table.DataCell>
+                                    <Table.DataCell className="tableCell">
+                                      <IdChip
+                                        value={n.message_ts}
+                                        title="Copy message ts"
+                                      />
+                                    </Table.DataCell>
+                                    <Table.DataCell
+                                      textSize="small"
+                                      className="tableCell"
+                                    >
+                                      {new Date(
+                                        n.next_eligible_at,
+                                      ).toLocaleString("en-GB", {
+                                        dateStyle: "short",
+                                        timeStyle: "short",
+                                      })}
+                                    </Table.DataCell>
+                                  </Table.Row>
+                                ))}
+                              </Table.Body>
+                            </Table>
                           )}
                         </div>
 
-                        <div>
+                        <div style={{ width: "100%" }}>
                           <Heading level="5" size="xsmall" spacing>
                             Database
                           </Heading>
                           <Table size="small">
+                            <Table.Header>
+                              <Table.Row>
+                                <Table.ColumnHeader textSize="small">
+                                  Table
+                                </Table.ColumnHeader>
+                                <Table.ColumnHeader
+                                  textSize="small"
+                                  align="right"
+                                >
+                                  Rows
+                                </Table.ColumnHeader>
+                              </Table.Row>
+                            </Table.Header>
                             <Table.Body>
                               {state.tableCounts.map((t) => (
                                 <Table.Row key={t.table}>
@@ -1337,31 +1694,66 @@ export function AdminClient() {
                                   </Table.HeaderCell>
                                   <Table.DataCell
                                     textSize="small"
+                                    align="right"
                                     className="tableCell tableCellSubtle"
                                   >
-                                    {t.rows} {t.rows === 1 ? "row" : "rows"}
+                                    {t.rows}
                                   </Table.DataCell>
                                 </Table.Row>
                               ))}
                             </Table.Body>
                           </Table>
+
                           {state.nagLogCount > 0 && (
                             <>
                               <BodyShort textColor="subtle" size="small" spacing>
                                 Latest {Math.min(10, state.nagLogCount)} of{" "}
                                 {state.nagLogCount} nag_log rows:
                               </BodyShort>
-                              <List size="small">
-                                {state.nagLogRecent.map((n) => (
-                                  <List.Item key={n.message_ts}>
-                                    {n.channel_id} · {n.message_ts} ·{" "}
-                                    {new Date(n.last_nagged_at).toLocaleString(
-                                      "en-GB",
-                                      { dateStyle: "short", timeStyle: "short" },
-                                    )}
-                                  </List.Item>
-                                ))}
-                              </List>
+                              <Table size="small">
+                                <Table.Header>
+                                  <Table.Row>
+                                    <Table.ColumnHeader textSize="small">
+                                      Channel
+                                    </Table.ColumnHeader>
+                                    <Table.ColumnHeader textSize="small">
+                                      Message ts
+                                    </Table.ColumnHeader>
+                                    <Table.ColumnHeader textSize="small">
+                                      Last nagged
+                                    </Table.ColumnHeader>
+                                  </Table.Row>
+                                </Table.Header>
+                                <Table.Body>
+                                  {state.nagLogRecent.map((n) => (
+                                    <Table.Row key={n.message_ts}>
+                                      <Table.DataCell className="tableCell">
+                                        <ChannelChip
+                                          channels={state.channels}
+                                          id={n.channel_id}
+                                        />
+                                      </Table.DataCell>
+                                      <Table.DataCell className="tableCell">
+                                        <IdChip
+                                          value={n.message_ts}
+                                          title="Copy message ts"
+                                        />
+                                      </Table.DataCell>
+                                      <Table.DataCell
+                                        textSize="small"
+                                        className="tableCell"
+                                      >
+                                        {new Date(
+                                          n.last_nagged_at,
+                                        ).toLocaleString("en-GB", {
+                                          dateStyle: "short",
+                                          timeStyle: "short",
+                                        })}
+                                      </Table.DataCell>
+                                    </Table.Row>
+                                  ))}
+                                </Table.Body>
+                              </Table>
                             </>
                           )}
                         </div>
