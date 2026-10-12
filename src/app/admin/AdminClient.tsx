@@ -1285,7 +1285,11 @@ export function AdminClient() {
                   </div>
 
                   {/* Verbose debug info — nested expandable, admins only. */}
-                  <ExpansionCard aria-label="Diagnostics" size="small">
+                  <ExpansionCard
+                    aria-label="Diagnostics"
+                    size="small"
+                    style={{ width: "100%" }}
+                  >
                     <ExpansionCard.Header>
                       <ExpansionCard.Title size="small">
                         Diagnostics
@@ -1295,7 +1299,11 @@ export function AdminClient() {
                       </ExpansionCard.Description>
                     </ExpansionCard.Header>
                     <ExpansionCard.Content>
-                      <VStack gap="space-16" align="start">
+                      <VStack
+                        gap="space-16"
+                        align="start"
+                        style={{ width: "100%" }}
+                      >
                         {state.you && (
                           <div style={{ width: "100%" }}>
                             <Heading level="5" size="xsmall" spacing>
