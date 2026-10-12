@@ -106,12 +106,19 @@ the app's Interactivity URL at a tunnel (e.g.
 
 Required bot token scopes:
 
+- `app_mentions:read` — receive `app_mention` events when someone @s the bot (reserved; needs Events subscription + route before it does anything)
 - `channels:history` — read messages in public channels the bot is invited to
 - `channels:read` — public channel metadata
+- `commands` — register slash commands like `/reops scan` (reserved; needs Slash Commands config + route before it does anything)
 - `groups:history` — read messages in private channels the bot is invited to
 - `groups:read` — private channel metadata
 - `reactions:read` — check for `:solved:` reactions
-- `chat:write` — post the digest
+- `reactions:write` — add reactions (e.g. `:eyes:` to acknowledge a thread)
+- `chat:write` — post the digest + DMs
+- `im:read` — list/inspect the bot's DM channels (`conversations.list`/`info`), receive `im_open`/`im_close` events
+- `im:write` — open a DM with a user (`conversations.open`) for assignment notifications
+- `usergroups:read` — (reserved; not currently used)
+- `users:read` — resolve Slack UIDs to display names
 - `users:read.email` — resolve Team Catalog member emails to Slack users
 
 ## Required env vars

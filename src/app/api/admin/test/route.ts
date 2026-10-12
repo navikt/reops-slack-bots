@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth";
 import { getSetting } from "../../../../lib/db";
-import { postUnansweredDigest } from "../../../../lib/slack";
+import { dmAssignment, postUnansweredDigest } from "../../../../lib/slack";
 import { runJob } from "../../../../lib/runner";
-import { log } from "../../../../lib/log";
+import { log, logError } from "../../../../lib/log";
 
 export const runtime = "nodejs";
 
@@ -16,6 +16,9 @@ export const runtime = "nodejs";
  *  - action=ping:        posts a clearly-marked fake reminder to the configured
  *                        target channel. Wiring check only — no nag_log write,
  *                        no scan.
+ *  - action=dm:          sends the caller a fake "assigned" DM. Verifies the
+ *                        im:write scope + conversations.open + dmAssignment
+ *                        rendering path without needing a real assignment.
  */
 export async function POST(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
@@ -65,6 +68,58 @@ export async function POST(req: Request): Promise<Response> {
       },
     ]);
     return NextResponse.json({ ok: true });
+  }
+
+  if (body.action === "dm") {
+    // The caller DMs themselves — no point picking a target, this is a wiring
+    // check for the caller's own Slack app + scopes. Caller must have a
+    // resolved Slack UID (state.you.slackUserId) or we can't open the DM.
+    if (!auth.user.email) {
+      return NextResponse.json(
+        { error: "No email on your token — can't resolve Slack UID" },
+        { status: 409 },
+      );
+    }
+    const { resolveEmailsToUserIds } = await import("../../../../lib/slack");
+    const uids = await resolveEmailsToUserIds([auth.user.email]);
+    const slackUserId = [...uids][0];
+    if (!slackUserId) {
+      return NextResponse.json(
+        { error: `No Slack user found for ${auth.user.email}` },
+        { status: 404 },
+      );
+    }
+    log({ event: "admin.test_dm", by: auth.user.navIdent, slack_user: slackUserId });
+    try {
+      const dmChannel = await dmAssignment(
+        slackUserId,
+        {
+          ts: String(Date.now() / 1000),
+          permalink: "https://github.com/navikt/reops-slack-bots",
+          text: "Test assignment DM — wiring check from /admin. Not a real thread.",
+          authorLabel: "reops-bots",
+          imageUrl: null,
+        },
+        [], // no roster — "Assign to…" select renders with only "release"
+        "reops-bot",
+      );
+      if (!dmChannel) {
+        return NextResponse.json(
+          { error: "conversations.open failed — is im:write scope granted?" },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json({ ok: true, dmChannel });
+    } catch (err) {
+      logError({
+        event: "admin.test_dm_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "DM failed" },
+        { status: 502 },
+      );
+    }
   }
 
   return NextResponse.json({ error: "Unknown action" }, { status: 400 });

@@ -10,6 +10,7 @@ import {
   listIgnorePersons,
   listNagSuppressed,
   listRecentNagLog,
+  listThreadActions,
 } from "../../../../lib/db";
 import { listJoinedChannels, resolveEmailsToUserIds } from "../../../../lib/slack";
 import { logError } from "../../../../lib/log";
@@ -32,7 +33,7 @@ export async function GET(req: Request): Promise<Response> {
   const reNagHoursRaw = await getSetting("re_nag_hours");
   const reNagHoursNum = Number.parseFloat(reNagHoursRaw ?? String(7 * 24));
 
-  const [frozen, scanWindowDays, minAgeHours, workHoursAware, ignorePersons, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminPersons, nagLogCount, nagLogRecentRaw, tableCounts, nagSuppressedRaw] =
+  const [frozen, scanWindowDays, minAgeHours, workHoursAware, ignorePersons, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminPersons, nagLogCount, nagLogRecentRaw, tableCounts, nagSuppressedRaw, threadActionsRaw] =
     await Promise.all([
       getSetting("frozen"),
       getSetting("scan_window_days"),
@@ -48,6 +49,7 @@ export async function GET(req: Request): Promise<Response> {
       listRecentNagLog(10),
       getTableCounts(),
       listNagSuppressed(Number.isNaN(reNagHoursNum) ? 7 * 24 : reNagHoursNum),
+      listThreadActions(),
     ]);
 
   // Channel list requires a working Slack token; degrade gracefully so the
@@ -174,6 +176,14 @@ export async function GET(req: Request): Promise<Response> {
       message_ts: r.message_ts,
       channel_id: r.channel_id,
       next_eligible_at: r.next_eligible_at.toISOString(),
+    })),
+    threadActions: threadActionsRaw.map((r) => ({
+      message_ts: r.message_ts,
+      channel_id: r.channel_id,
+      action: r.action,
+      actor_user_id: r.actor_user_id,
+      assignee_user_id: r.assignee_user_id,
+      actioned_at: r.actioned_at.toISOString(),
     })),
     tableCounts,
     you,

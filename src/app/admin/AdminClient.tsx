@@ -87,6 +87,15 @@ interface NagSuppressedEntry {
   next_eligible_at: string;
 }
 
+interface ThreadActionEntry {
+  message_ts: string;
+  channel_id: string;
+  action: string; // 'suppressed' | 'assigned'
+  actor_user_id: string;
+  assignee_user_id: string | null;
+  actioned_at: string;
+}
+
 interface YouEntry {
   navIdent: string;
   email: string | null;
@@ -118,6 +127,7 @@ interface AdminState {
   nagLogCount: number;
   nagLogRecent: NagLogEntry[];
   nagSuppressed: NagSuppressedEntry[];
+  threadActions: ThreadActionEntry[];
   tableCounts: TableCount[];
   you: YouEntry | null;
 }
@@ -1259,6 +1269,14 @@ export function AdminClient() {
                       >
                         Post test digest
                       </Button>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        loading={busy}
+                        onClick={() => void runTestAction("dm")}
+                      >
+                        Send test DM to me
+                      </Button>
                     </HStack>
                     {/* Fixed one-line slot: error text appears without shifting layout. */}
                     <div style={{ minHeight: "1.5rem", marginTop: "0.25rem" }}>
@@ -1266,8 +1284,9 @@ export function AdminClient() {
                         <ErrorMessage size="small">{scanError}</ErrorMessage>
                       ) : (
                         <BodyShort textColor="subtle" size="small">
-                          Scan ignores the re-nag cooldown — already-reminded
-                          messages are included. Test digest posts a fake one.
+                          Scan ignores the re-nag cooldown. Test digest posts
+                          a fake. DM tests the assign flow end-to-end (opens
+                          your DM, posts fake assignment).
                         </BodyShort>
                       )}
                     </div>
@@ -1665,6 +1684,124 @@ export function AdminClient() {
                                         dateStyle: "short",
                                         timeStyle: "short",
                                       })}
+                                    </Table.DataCell>
+                                  </Table.Row>
+                                ))}
+                              </Table.Body>
+                            </Table>
+                          )}
+                        </div>
+
+                        <div style={{ width: "100%" }}>
+                          <Heading level="5" size="xsmall" spacing>
+                            <HStack gap="space-4" align="center">
+                              Thread actions ({state.threadActions.length})
+                              <HelpText title="What is this?">
+                                Rows in thread_actions — manual marks from the
+                                digest. "assigned" means someone owns the
+                                thread and gets DM re-nags instead of the
+                                channel. "suppressed" hides the thread until
+                                there's new activity. Released threads are
+                                deleted from this table.
+                              </HelpText>
+                            </HStack>
+                          </Heading>
+                          {state.threadActions.length === 0 ? (
+                            <BodyShort textColor="subtle" size="small">
+                              No assignments or suppressions — every
+                              unanswered message is eligible for the channel
+                              digest.
+                            </BodyShort>
+                          ) : (
+                            <Table size="small">
+                              <Table.Header>
+                                <Table.Row>
+                                  <Table.ColumnHeader textSize="small">
+                                    Action
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    Assignee
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    Message ts
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    Channel
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    By
+                                  </Table.ColumnHeader>
+                                  <Table.ColumnHeader textSize="small">
+                                    When
+                                  </Table.ColumnHeader>
+                                </Table.Row>
+                              </Table.Header>
+                              <Table.Body>
+                                {state.threadActions.map((a) => (
+                                  <Table.Row key={a.message_ts}>
+                                    <Table.DataCell className="tableCell">
+                                      {a.action === "assigned" ? (
+                                        <Tag
+                                          variant="moderate"
+                                          data-color="info"
+                                          size="small"
+                                        >
+                                          Assigned
+                                        </Tag>
+                                      ) : (
+                                        <Tag
+                                          variant="moderate"
+                                          data-color="neutral"
+                                          size="small"
+                                        >
+                                          Suppressed
+                                        </Tag>
+                                      )}
+                                    </Table.DataCell>
+                                    <Table.DataCell className="tableCell">
+                                      {a.assignee_user_id ? (
+                                        <IdChip
+                                          value={a.assignee_user_id}
+                                          title="Copy assignee Slack UID"
+                                        />
+                                      ) : (
+                                        <BodyShort
+                                          textColor="subtle"
+                                          size="small"
+                                        >
+                                          —
+                                        </BodyShort>
+                                      )}
+                                    </Table.DataCell>
+                                    <Table.DataCell className="tableCell">
+                                      <IdChip
+                                        value={a.message_ts}
+                                        title="Copy message ts"
+                                      />
+                                    </Table.DataCell>
+                                    <Table.DataCell className="tableCell">
+                                      <ChannelChip
+                                        channels={state.channels}
+                                        id={a.channel_id}
+                                      />
+                                    </Table.DataCell>
+                                    <Table.DataCell className="tableCell">
+                                      <IdChip
+                                        value={a.actor_user_id}
+                                        title="Copy actor Slack UID"
+                                      />
+                                    </Table.DataCell>
+                                    <Table.DataCell
+                                      textSize="small"
+                                      className="tableCell"
+                                    >
+                                      {new Date(a.actioned_at).toLocaleString(
+                                        "en-GB",
+                                        {
+                                          dateStyle: "short",
+                                          timeStyle: "short",
+                                        },
+                                      )}
                                     </Table.DataCell>
                                   </Table.Row>
                                 ))}

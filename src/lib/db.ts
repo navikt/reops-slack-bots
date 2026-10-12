@@ -352,6 +352,35 @@ export async function deleteThreadAction(messageTs: string): Promise<void> {
 }
 
 /**
+ * All thread_actions rows, newest first — powers the Diagnostics table so
+ * admins can see who's been assigned what (and which threads are suppressed).
+ */
+export async function listThreadActions(): Promise<
+  Array<{
+    message_ts: string;
+    channel_id: string;
+    action: string;
+    actor_user_id: string;
+    assignee_user_id: string | null;
+    actioned_at: Date;
+  }>
+> {
+  const rows = await getDb()
+    .select()
+    .from(threadActions)
+    .orderBy(desc(threadActions.actionedAt))
+    .limit(100);
+  return rows.map((r) => ({
+    message_ts: r.messageTs,
+    channel_id: r.channelId,
+    action: r.action,
+    actor_user_id: r.actorUserId,
+    assignee_user_id: r.assigneeUserId,
+    actioned_at: r.actionedAt,
+  }));
+}
+
+/**
  * Full thread_actions rows for the given ts list — the handled rule reads
  * actioned_at; re-nag targeting reads action + assignee_user_id.
  */

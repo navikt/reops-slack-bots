@@ -16,9 +16,13 @@
                 "channels:read",
                 "groups:history",
                 "groups:read",
+                "app_mentions:read",
+                "commands",
                 "reactions:read",
                 "reactions:write",
                 "chat:write",
+                "im:read",
+                "im:write",
                 "usergroups:read",
                 "users:read",
                 "users:read.email"
