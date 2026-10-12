@@ -156,7 +156,7 @@ async function getSelfIdentity(): Promise<{ userId: string; botId: string }> {
  * chat.getPermalink API call entirely:
  *   https://{workspace}.slack.com/archives/{channel}/p{ts without the dot}
  */
-function buildPermalink(channelId: string, ts: string): string {
+export function buildPermalink(channelId: string, ts: string): string {
   const workspace = process.env.SLACK_WORKSPACE_SUBDOMAIN ?? "nav";
   return `https://${workspace}.slack.com/archives/${channelId}/p${ts.replace(".", "")}`;
 }
@@ -165,9 +165,16 @@ export interface UnsolvedMessage {
   ts: string;
   user: string;
   text: string;
+  /** Permalink to the LATEST activity — thread reply when replies exist. */
   permalink: string;
+  /** Author of the latest reply (null when no replies) — preview matches link. */
+  latestUser: string | null;
+  /** Text of the latest reply (null when no replies). */
+  latestText: string | null;
+  /** First image of the latest reply, thumbnailed in the digest (null if none). */
+  latestImage: string | null;
   replyCount: number;
-  /** Newest embedded replies (up to 3), oldest first, most recent last. */
+  /** All thread replies (hydrated via conversations.replies), oldest first. */
   latestReplies: Array<{
     user: string | null;
     ts: number;
@@ -186,6 +193,13 @@ export interface UnsolvedMessage {
  *
  * :solved: is NOT filtered here — it is a recency-based handled signal, not
  * a veto. See isThreadHandled.
+ *
+ * Thread replies: conversations.history's embedded `latest_replies` does not
+ * reliably carry author/reaction data (observed on the wire as ts-only
+ * stubs), so threads with replies are hydrated via conversations.replies —
+ * one call per thread, few per scan at hourly cadence. Bonus: we see ALL
+ * replies, not just the 3 newest, so a :solved: deep in a long thread is no
+ * longer missed.
  */
 export async function fetchOldUnsolvedMessages(
   channelId: string,
@@ -221,37 +235,69 @@ export async function fetchOldUnsolvedMessages(
       // Still inside its (work-hours aware) grace period — too fresh to nag.
       if (graceEligibleTs(msg.ts, graceHours, workHoursAware) > nowS) continue;
 
-      // history embeds the 3 newest replies inline — enough to apply the
-      // handled rule without a conversations.replies call. The SDK type
-      // omits latest_replies; it exists on the wire.
-      const latestReplies =
-        (msg as {
-          latest_replies?: Array<{
-            user?: string;
-            ts?: string;
-            reactions?: Array<{ name: string }>;
-          }>;
-        }).latest_replies ?? [];
+      const replyCount = msg.reply_count ?? 0;
 
       unsolved.push({
         ts: msg.ts,
         user: msg.user,
         text: msg.text ?? "",
         permalink: buildPermalink(channelId, msg.ts),
-        replyCount: msg.reply_count ?? 0,
-        latestReplies: latestReplies
-          .filter((r) => r.ts)
-          .map((r) => ({
-            user: r.user ?? null,
-            ts: Number.parseFloat(r.ts as string),
-            solved: (r.reactions ?? []).some((x) => x.name === "solved"),
-          })),
+        latestUser: null,
+        latestText: null,
+        latestImage: null,
+        replyCount,
+        // Hydrated below for threaded messages.
+        latestReplies: [],
         parentSolved: (msg.reactions ?? []).some((r) => r.name === "solved"),
       });
     }
 
     cursor = res.response_metadata?.next_cursor || undefined;
   } while (cursor);
+
+  // Hydrate threads: full reply list with authors + reactions. Replies are
+  // returned oldest-first; index 0 is the parent itself — skip it. The
+  // permalink points at the newest reply (latest activity) so clicking
+  // through lands where the conversation actually is.
+  for (const m of unsolved) {
+    if (m.replyCount === 0) continue;
+    try {
+      const res = await slackCall("conversations.replies", (web) =>
+        web.conversations.replies({ channel: channelId, ts: m.ts, limit: 200 }),
+      );
+      const replies = (res.messages ?? []).slice(1).filter((r) => r.ts);
+      m.latestReplies = replies.map((r) => ({
+        user: r.user ?? null,
+        ts: Number.parseFloat(r.ts as string),
+        solved: (r.reactions ?? []).some((x) => x.name === "solved"),
+      }));
+      const newest = replies[replies.length - 1];
+      if (newest?.ts) {
+        m.permalink = buildPermalink(channelId, newest.ts);
+        m.latestUser = newest.user ?? null;
+        m.latestText = newest.text ?? "";
+        // Preview an attached image if the latest reply has one (thumb_360
+        // is Slack's pre-sized variant; url_private works because the bot
+        // token is sent with the request by Slack clients... actually no —
+        // url_private needs auth headers; permalink only. Use thumb URL when
+        // present, which Slack renders inline for the bot's own posts.
+        const file = (newest.files ?? []).find((f) =>
+          (f.mimetype ?? "").startsWith("image/"),
+        );
+        m.latestImage =
+          file?.thumb_360 ?? file?.thumb_160 ?? file?.url_private ?? null;
+      }
+    } catch (err) {
+      // Missing reply data must not kill the scan — fall back to "no reply
+      // info", which treats the thread as unanswered (safe direction: an
+      // extra nag beats silence).
+      logError({
+        event: "slack.replies_fetch_failed",
+        ts: m.ts,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   return unsolved;
 }
@@ -319,13 +365,59 @@ export async function expandIgnoreSet(emails: string[]): Promise<Set<string>> {
   return resolveEmailsToUserIds(emails);
 }
 
+/**
+ * users.info display-name lookup with a long-lived in-process cache (names
+ * change rarely). Falls back to the raw UID on any failure — the digest
+ * stays readable either way.
+ */
+const userLabelCache = new Map<string, { label: string; cachedAt: number }>();
+const USER_LABEL_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function resolveUserLabels(
+  userIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const now = Date.now();
+  for (const uid of [...new Set(userIds)]) {
+    const cached = userLabelCache.get(uid);
+    if (cached && now - cached.cachedAt < USER_LABEL_TTL_MS) {
+      out.set(uid, cached.label);
+      continue;
+    }
+    try {
+      const res = await slackCall("users.info", (web) =>
+        web.users.info({ user: uid }),
+      );
+      const label =
+        res.user?.profile?.display_name ||
+        res.user?.real_name ||
+        res.user?.name ||
+        uid;
+      userLabelCache.set(uid, { label, cachedAt: now });
+      out.set(uid, label);
+    } catch {
+      out.set(uid, uid); // don't cache failures — next scan retries
+    }
+  }
+  return out;
+}
+
 export interface UnsolvedReminderItem {
   ts: string;
   permalink: string;
+  /** Excerpt of the previewed message (latest reply when threaded). */
+  text: string;
+  /** Display label for the previewed message's author. */
+  authorLabel: string;
+  /** Optional image thumb URL attached to the previewed message. */
+  imageUrl: string | null;
 }
 
-/** Slack unfurls at most 5 links per message — the digest caps at that. */
-const MAX_DIGEST_LINKS = 5;
+/** action_id for the per-item Suppress button; value carries the thread ts. */
+export const DIGEST_SUPPRESS_ACTION = "digest_suppress";
+
+/** Max items per digest message — Slack allows 50 blocks; we use 4/item. */
+const MAX_DIGEST_ITEMS = 12;
 
 function formatAge(ts: string, nowMs: number): string {
   const hours = Math.max(0, Math.round((nowMs - Number(ts) * 1000) / 3_600_000));
@@ -334,45 +426,194 @@ function formatAge(ts: string, nowMs: number): string {
   return `${days} ${days === 1 ? "dag" : "dager"}`;
 }
 
+function excerpt(text: string, max = 220): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+type DigestBlock =
+  | { type: "section"; text: { type: "mrkdwn"; text: string } }
+  | {
+      type: "context";
+      elements: Array<{ type: "mrkdwn" | "image"; text?: string; image_url?: string; alt_text?: string }>;
+    }
+  | {
+      type: "actions";
+      elements: Array<{
+        type: "button";
+        text: { type: "plain_text"; text: string };
+        action_id: string;
+        value: string;
+      }>;
+    }
+  | { type: "divider" };
+
 /**
- * Posts one digest message per scan to the internal channel. Each line is a
- * bare permalink — Slack auto-unfurls those into message previews, so the
- * message itself stays clean (no quoted text, no channel name, no buttons).
- * Replies to the threads themselves are the workflow; a "resolve" shortcut
- * here would encourage not reading the message.
+ * Builds the blocks/text for one digest message — shared by post + update.
+ *
+ * Custom "previews" instead of native unfurls. Each item renders as:
+ *   section — *author* · age · åpne tråd
+ *   context — > excerpt of the previewed message (+ image thumb when present)
+ *   actions — [Suppress] button directly under its preview
+ *   divider
+ * Posting passes unfurl_links:false, so native previews never batch below
+ * the message and every button stays glued to its item.
+ */
+function buildDigestBlocks(
+  items: UnsolvedReminderItem[],
+  total: number,
+  part: number,
+  parts: number,
+  nowMs: number,
+): { text: string; blocks: DigestBlock[] } {
+  const partNote = parts > 1 ? ` (del ${part} av ${parts})` : "";
+  const header: DigestBlock = {
+    type: "section",
+    text: { type: "mrkdwn", text: `*Ubesvarte meldinger (${total})${partNote}*` },
+  };
+  const blocks: DigestBlock[] = [header, { type: "divider" }];
+  for (const [i, m] of items.entries()) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${m.authorLabel}* · ubesvart i ${formatAge(m.ts, nowMs)} · <${m.permalink}|åpne tråd>`,
+      },
+    });
+    const quote: DigestBlock = {
+      type: "context",
+      elements: [{ type: "mrkdwn", text: `>${excerpt(m.text)}` }],
+    };
+    if (m.imageUrl) {
+      quote.elements.push({
+        type: "image",
+        image_url: m.imageUrl,
+        alt_text: "vedlegg",
+      });
+    }
+    blocks.push(quote);
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Suppress" },
+          action_id: DIGEST_SUPPRESS_ACTION,
+          value: m.ts,
+        },
+      ],
+    });
+    if (i < items.length - 1) blocks.push({ type: "divider" });
+  }
+  // Plain-text fallback for notifications / screen readers.
+  const text = `Ubesvarte meldinger (${total})${partNote}\n${items
+    .map((m) => `${m.authorLabel}: ${excerpt(m.text, 80)} — ${m.permalink}`)
+    .join("\n")}`;
+  return { text, blocks };
+}
+
+/**
+ * Posts the unanswered-messages digest to the internal channel and returns
+ * the posted message ts + items per message, so callers can track which
+ * digest carries which thread (digest_messages table) for reconciliation.
  */
 export async function postUnansweredDigest(
   channelId: string,
   items: UnsolvedReminderItem[],
-): Promise<void> {
-  if (items.length === 0) return;
+): Promise<Array<{ digestTs: string; items: UnsolvedReminderItem[] }>> {
+  if (items.length === 0) return [];
 
   const nowMs = Date.now();
-  const shown = items.slice(0, MAX_DIGEST_LINKS);
-  const lines = shown.map(
-    (m) => `${m.permalink} — ubesvart i ${formatAge(m.ts, nowMs)}`,
+  const chunks: UnsolvedReminderItem[][] = [];
+  for (let i = 0; i < items.length; i += MAX_DIGEST_ITEMS) {
+    chunks.push(items.slice(i, i + MAX_DIGEST_ITEMS));
+  }
+
+  const posted: Array<{ digestTs: string; items: UnsolvedReminderItem[] }> = [];
+
+  for (const [idx, chunk] of chunks.entries()) {
+    const { text, blocks } = buildDigestBlocks(
+      chunk,
+      items.length,
+      idx + 1,
+      chunks.length,
+      nowMs,
+    );
+
+    const res = await slackCall("chat.postMessage", (web) =>
+      web.chat.postMessage({
+        channel: channelId,
+        text,
+        blocks,
+        unfurl_links: false,
+        unfurl_media: false,
+      }),
+    );
+
+    log({
+      event: "slack.digest_posted",
+      channel: channelId,
+      count: chunk.length,
+      total: items.length,
+      part: idx + 1,
+      parts: chunks.length,
+      ok: res.ok === true,
+    });
+
+    if (res.ok && res.ts) {
+      posted.push({ digestTs: res.ts, items: chunk });
+    }
+  }
+
+  return posted;
+}
+
+/** Deletes a previously posted digest message (replaced by a fresh one). */
+export async function deleteDigestMessage(
+  channelId: string,
+  digestTs: string,
+): Promise<void> {
+  await slackCall("chat.delete", (web) =>
+    web.chat.delete({ channel: channelId, ts: digestTs }),
   );
-  const overflow = items.length - shown.length;
-  const countNote =
-    overflow > 0
-      ? ` (viser ${shown.length} av ${items.length})`
-      : items.length > 1
-        ? ` (${items.length})`
-        : "";
-  const rest =
-    overflow > 0 ? `\n_…og ${overflow} til i kanalen._` : "";
+  log({ event: "slack.digest_deleted", channel: channelId, ts: digestTs });
+}
 
-  const text = `*Ubesvarte meldinger${countNote}*\n${lines.join("\n")}${rest}`;
-
-  const res = await slackCall("chat.postMessage", (web) =>
-    web.chat.postMessage({ channel: channelId, text }),
+/**
+ * Reconciliation: rewrite a previously posted digest to only the still-open
+ * items, or delete it when none remain. Called after each scan (and after
+ * Suppress presses) so digests shrink as threads get handled.
+ */
+export async function updateUnansweredDigest(
+  channelId: string,
+  digestTs: string,
+  remaining: UnsolvedReminderItem[],
+  total: number,
+): Promise<void> {
+  if (remaining.length === 0) {
+    await slackCall("chat.delete", (web) =>
+      web.chat.delete({ channel: channelId, ts: digestTs }),
+    );
+    log({ event: "slack.digest_deleted", channel: channelId, ts: digestTs });
+    return;
+  }
+  const { text, blocks } = buildDigestBlocks(remaining, total, 1, 1, Date.now());
+  await slackCall("chat.update", (web) =>
+    // unfurl_* is valid on chat.update per Web API docs; the SDK's
+    // ChatUpdateArguments type lags behind.
+    web.chat.update({
+      channel: channelId,
+      ts: digestTs,
+      text,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    } as Parameters<typeof web.chat.update>[0]),
   );
-
   log({
-    event: "slack.digest_posted",
+    event: "slack.digest_updated",
     channel: channelId,
-    count: shown.length,
-    overflow,
-    ok: res.ok === true,
+    ts: digestTs,
+    remaining: remaining.length,
   });
 }

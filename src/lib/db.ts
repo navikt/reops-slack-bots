@@ -1,10 +1,12 @@
 import { Pool, type QueryResult, type QueryResultRow } from "pg";
-import { readdir, readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { log } from "./log";
+import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import * as schema from "./schema";
+import { adminGroups, adminPersons, digestMessages, ignoreGroups, ignorePersons, nagLog, settings, threadActions } from "./schema";
 
 let pool: Pool | null = null;
+let db: NodePgDatabase<typeof schema> | null = null;
 
 /**
  * Connection config. On Nais we get NAIS_DATABASE_<APP>_<DB>_* injected:
@@ -61,6 +63,15 @@ export function getPool(): Pool {
   return pool;
 }
 
+/** Drizzle instance over the shared pool. Import schema tables from
+ * src/lib/schema.ts directly; this is for query-builder access. */
+export function getDb(): NodePgDatabase<typeof schema> {
+  if (db) return db;
+  db = drizzle(getPool(), { schema });
+  return db;
+}
+
+/** Raw-SQL escape hatch for the few non-CRUD uses. Prefer getDb(). */
 export async function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
@@ -68,81 +79,25 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   return getPool().query<T>(text, params);
 }
 
-/**
- * Ground-truth readiness check: queries schema_migrations directly rather
- * than trusting in-process state. An in-memory "migrations done" flag was
- * tried here before and removed — Next's standalone/Turbopack build can
- * bundle Route Handlers and the instrumentation hook into separate chunks,
- * each getting its own module-scope copy of this file, so a flag set by
- * runMigrations() (running inside the instrumentation bundle) was never
- * visible to the readiness route's bundle, even though migrations had
- * genuinely completed — the pod never passed its readiness probe despite
- * being fully functional. Querying the DB directly sidesteps that entirely.
- * Ready once every .sql file in the migrations dir has a matching applied
- * row. Fails closed — a DB error means "not ready", not ready.
- */
-export async function migrationsAppliedInDb(): Promise<boolean> {
-  const migrationsDir = path.join(process.cwd(), "src/lib/migrations");
-  const files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql"));
-  if (files.length === 0) return true;
-
-  const res = await getPool().query<{ filename: string }>(
-    "SELECT filename FROM schema_migrations",
-  );
-  const applied = new Set(res.rows.map((r) => r.filename));
-  return files.every((f) => applied.has(f));
-}
-
-export async function runMigrations(): Promise<void> {
-  const p = getPool();
-
-  await p.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      filename TEXT PRIMARY KEY,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-  `);
-
-  const migrationsDir = path.join(process.cwd(), "src/lib/migrations");
-  const files = (await readdir(migrationsDir))
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  const applied = await p.query<{ filename: string }>("SELECT filename FROM schema_migrations");
-  const appliedSet = new Set(applied.rows.map((r) => r.filename));
-
-  for (const file of files) {
-    if (appliedSet.has(file)) continue;
-    const sql = await readFile(path.join(migrationsDir, file), "utf-8");
-    log({ event: "migration.apply", file });
-    await p.query("BEGIN");
-    try {
-      await p.query(sql);
-      await p.query("INSERT INTO schema_migrations (filename) VALUES ($1)", [file]);
-      await p.query("COMMIT");
-    } catch (err) {
-      await p.query("ROLLBACK");
-      throw err;
-    }
-  }
-}
-
 // ── Domain helpers ────────────────────────────────────────────────────────────
 
 export async function getSetting(key: string): Promise<string | null> {
-  const res = await query<{ value: string }>("SELECT value FROM settings WHERE key = $1", [key]);
-  return res.rows[0]?.value ?? null;
+  const rows = await getDb()
+    .select({ value: settings.value })
+    .from(settings)
+    .where(eq(settings.key, key))
+    .limit(1);
+  return rows[0]?.value ?? null;
 }
 
 export async function setSetting(key: string, value: string): Promise<void> {
-  await query(
-    `INSERT INTO settings (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [key, value],
-  );
+  await getDb()
+    .insert(settings)
+    .values({ key, value })
+    .onConflictDoUpdate({ target: settings.key, set: { value } });
 }
 
-export interface IgnoreListRow {
+export interface IgnorePersonRow {
   id: number;
   kind: "person";
   label: string | null;
@@ -151,37 +106,54 @@ export interface IgnoreListRow {
   created_at: Date;
 }
 
-export async function listIgnoreEntries(): Promise<IgnoreListRow[]> {
-  const res = await query<IgnoreListRow>(
-    "SELECT id, kind, label, nav_ident, email, created_at FROM ignore_list ORDER BY created_at ASC",
-  );
-  return res.rows;
+function toIgnorePersonRow(r: typeof ignorePersons.$inferSelect): IgnorePersonRow {
+  return {
+    id: r.id,
+    kind: r.kind as IgnorePersonRow["kind"],
+    label: r.label,
+    nav_ident: r.navIdent,
+    email: r.email,
+    created_at: r.createdAt,
+  };
 }
 
-export async function addIgnoreEntry(
+export async function listIgnorePersons(): Promise<IgnorePersonRow[]> {
+  const rows = await getDb()
+    .select()
+    .from(ignorePersons)
+    .orderBy(asc(ignorePersons.createdAt));
+  return rows.map(toIgnorePersonRow);
+}
+
+export async function addIgnorePerson(
   email: string,
   label: string | null,
   navIdent: string | null,
-): Promise<IgnoreListRow> {
-  const res = await query<IgnoreListRow>(
-    `INSERT INTO ignore_list (kind, label, nav_ident, email) VALUES ('person', $1, $2, $3)
-     RETURNING id, kind, label, nav_ident, email, created_at`,
-    [label, navIdent, email],
-  );
-  return res.rows[0];
+): Promise<IgnorePersonRow> {
+  const rows = await getDb()
+    .insert(ignorePersons)
+    .values({ kind: "person", label, navIdent, email })
+    .returning();
+  return toIgnorePersonRow(rows[0]);
 }
 
-export async function removeIgnoreEntry(id: number): Promise<boolean> {
-  const res = await query("DELETE FROM ignore_list WHERE id = $1", [id]);
-  return (res.rowCount ?? 0) > 0;
+export async function removeIgnorePerson(id: number): Promise<boolean> {
+  const rows = await getDb()
+    .delete(ignorePersons)
+    .where(eq(ignorePersons.id, id))
+    .returning({ id: ignorePersons.id });
+  return rows.length > 0;
 }
 
 export async function listIgnoreEmails(): Promise<string[]> {
-  const res = await query<{ email: string }>("SELECT email FROM ignore_list WHERE kind = 'person'");
-  return res.rows.map((r) => r.email);
+  const rows = await getDb()
+    .select({ email: ignorePersons.email })
+    .from(ignorePersons)
+    .where(eq(ignorePersons.kind, "person"));
+  return rows.map((r) => r.email);
 }
 
-// ── Groups (Team Catalog) ─────────────────────────────────────────────────────
+// ── Ignore groups (Team Catalog) ─────────────────────────────────────────────────────
 
 export interface GroupRow {
   id: string;
@@ -189,66 +161,77 @@ export interface GroupRow {
   label: string;
 }
 
-export async function listGroups(): Promise<GroupRow[]> {
-  const res = await query<GroupRow>("SELECT id, kind, label FROM groups ORDER BY label ASC");
-  return res.rows;
+export async function listIgnoreGroups(): Promise<GroupRow[]> {
+  const rows = await getDb().select().from(ignoreGroups).orderBy(asc(ignoreGroups.label));
+  return rows.map((r) => ({ ...r, kind: r.kind as GroupRow["kind"] }));
 }
 
-export async function addGroup(id: string, kind: GroupRow["kind"], label: string): Promise<void> {
-  await query(
-    "INSERT INTO groups (id, kind, label) VALUES ($1, $2, $3) ON CONFLICT (id, kind) DO NOTHING",
-    [id, kind, label],
-  );
+export async function addIgnoreGroup(id: string, kind: GroupRow["kind"], label: string): Promise<void> {
+  await getDb()
+    .insert(ignoreGroups)
+    .values({ id, kind, label })
+    .onConflictDoNothing({ target: [ignoreGroups.id, ignoreGroups.kind] });
 }
 
-export async function removeGroup(id: string, kind: string): Promise<boolean> {
-  const res = await query("DELETE FROM groups WHERE id = $1 AND kind = $2", [id, kind]);
-  return (res.rowCount ?? 0) > 0;
+export async function removeIgnoreGroup(id: string, kind: string): Promise<boolean> {
+  const rows = await getDb()
+    .delete(ignoreGroups)
+    .where(and(eq(ignoreGroups.id, id), eq(ignoreGroups.kind, kind)))
+    .returning({ id: ignoreGroups.id });
+  return rows.length > 0;
 }
 
 // ── Admin groups (Team Catalog groups whose members may use /admin) ──────────
 
 export async function listAdminGroups(): Promise<GroupRow[]> {
-  const res = await query<GroupRow>("SELECT id, kind, label FROM admin_groups ORDER BY label ASC");
-  return res.rows;
+  const rows = await getDb().select().from(adminGroups).orderBy(asc(adminGroups.label));
+  return rows.map((r) => ({ ...r, kind: r.kind as GroupRow["kind"] }));
 }
 
 export async function addAdminGroup(id: string, kind: GroupRow["kind"], label: string): Promise<void> {
-  await query(
-    "INSERT INTO admin_groups (id, kind, label) VALUES ($1, $2, $3) ON CONFLICT (id, kind) DO NOTHING",
-    [id, kind, label],
-  );
+  await getDb()
+    .insert(adminGroups)
+    .values({ id, kind, label })
+    .onConflictDoNothing({ target: [adminGroups.id, adminGroups.kind] });
 }
 
 export async function removeAdminGroup(id: string, kind: string): Promise<boolean> {
-  const res = await query("DELETE FROM admin_groups WHERE id = $1 AND kind = $2", [id, kind]);
-  return (res.rowCount ?? 0) > 0;
+  const rows = await getDb()
+    .delete(adminGroups)
+    .where(and(eq(adminGroups.id, id), eq(adminGroups.kind, kind)))
+    .returning({ id: adminGroups.id });
+  return rows.length > 0;
 }
 
-// ── Admin individuals (nav-ident based) ─────────────────────────────────────
+// ── Admin persons (nav-ident based) ─────────────────────────────────────
 
-export interface AdminIdentRow {
+export interface AdminPersonRow {
   nav_ident: string;
   label: string | null;
 }
 
-export async function listAdminIdents(): Promise<AdminIdentRow[]> {
-  const res = await query<AdminIdentRow>(
-    "SELECT nav_ident, label FROM admin_idents ORDER BY label ASC NULLS LAST, nav_ident ASC",
-  );
-  return res.rows;
+export async function listAdminPersons(): Promise<AdminPersonRow[]> {
+  const rows = await getDb()
+    .select({ navIdent: adminPersons.navIdent, label: adminPersons.label })
+    .from(adminPersons)
+    // ORDER BY label ASC NULLS LAST, nav_ident ASC
+    .orderBy(sql`${adminPersons.label} ASC NULLS LAST`, asc(adminPersons.navIdent));
+  return rows.map((r) => ({ nav_ident: r.navIdent, label: r.label }));
 }
 
-export async function addAdminIdent(navIdent: string, label: string | null): Promise<void> {
-  await query(
-    "INSERT INTO admin_idents (nav_ident, label) VALUES ($1, $2) ON CONFLICT (nav_ident) DO NOTHING",
-    [navIdent, label],
-  );
+export async function addAdminPerson(navIdent: string, label: string | null): Promise<void> {
+  await getDb()
+    .insert(adminPersons)
+    .values({ navIdent, label })
+    .onConflictDoNothing({ target: adminPersons.navIdent });
 }
 
-export async function removeAdminIdent(navIdent: string): Promise<boolean> {
-  const res = await query("DELETE FROM admin_idents WHERE nav_ident = $1", [navIdent]);
-  return (res.rowCount ?? 0) > 0;
+export async function removeAdminPerson(navIdent: string): Promise<boolean> {
+  const rows = await getDb()
+    .delete(adminPersons)
+    .where(eq(adminPersons.navIdent, navIdent))
+    .returning({ navIdent: adminPersons.navIdent });
+  return rows.length > 0;
 }
 
 export async function getRecentlyNaggedTs(
@@ -256,30 +239,180 @@ export async function getRecentlyNaggedTs(
   cooldownHours: number,
 ): Promise<Set<string>> {
   if (messageTss.length === 0) return new Set();
-  const res = await query<{ message_ts: string }>(
-    `SELECT message_ts FROM nag_log
-     WHERE message_ts = ANY($1::text[])
-       AND last_nagged_at > now() - ($2 || ' hours')::interval`,
-    [messageTss, String(cooldownHours)],
-  );
-  return new Set(res.rows.map((r) => r.message_ts));
+  const rows = await getDb()
+    .select({ messageTs: nagLog.messageTs })
+    .from(nagLog)
+    .where(
+      and(
+        inArray(nagLog.messageTs, messageTss),
+        sql`${nagLog.lastNaggedAt} > now() - (${String(cooldownHours)} || ' hours')::interval`,
+      ),
+    );
+  return new Set(rows.map((r) => r.messageTs));
 }
 
 export async function upsertNagLog(messageTs: string, channelId: string): Promise<void> {
-  await query(
-    `INSERT INTO nag_log (message_ts, channel_id, last_nagged_at) VALUES ($1, $2, now())
-     ON CONFLICT (message_ts) DO UPDATE SET last_nagged_at = now(), channel_id = EXCLUDED.channel_id`,
-    [messageTs, channelId],
-  );
+  await getDb()
+    .insert(nagLog)
+    .values({ messageTs, channelId })
+    .onConflictDoUpdate({
+      target: nagLog.messageTs,
+      set: { lastNaggedAt: new Date(), channelId },
+    });
+}
+
+// ── Admin DB insight (read-only) ─────────────────────────────────────────────
+
+export async function getNagLogCount(): Promise<number> {
+  const rows = await getDb().select({ n: count() }).from(nagLog);
+  return rows[0]?.n ?? 0;
 }
 
 /**
- * Drops the entire public schema (all tables incl. schema_migrations) and
- * recreates it empty. Boot-time migrations rebuild everything on next run —
- * call runMigrations() right after, or restart the app.
+ * nag_log rows still inside the re-nag cooldown, with the timestamp each
+ * becomes eligible again. Drives the admin "suppressed until" diagnostics.
  */
-export async function wipeDatabase(): Promise<void> {
-  await query("DROP SCHEMA public CASCADE");
-  await query("CREATE SCHEMA public");
-  await query("GRANT ALL ON SCHEMA public TO public");
+export async function listNagSuppressed(
+  cooldownHours: number,
+): Promise<Array<{ message_ts: string; channel_id: string; next_eligible_at: Date }>> {
+  const rows = await getDb()
+    .select({
+      messageTs: nagLog.messageTs,
+      channelId: nagLog.channelId,
+      // sql`` columns come back untyped from pg — timestamptz lands as a
+      // string, so map with new Date() below instead of mode:"date".
+      nextEligibleAt: sql<string>`${nagLog.lastNaggedAt} + (${String(cooldownHours)} || ' hours')::interval`,
+    })
+    .from(nagLog)
+    .where(sql`${nagLog.lastNaggedAt} > now() - (${String(cooldownHours)} || ' hours')::interval`)
+    .orderBy(asc(nagLog.lastNaggedAt));
+  return rows.map((r) => ({
+    message_ts: r.messageTs,
+    channel_id: r.channelId,
+    next_eligible_at: new Date(r.nextEligibleAt),
+  }));
+}
+
+export async function listRecentNagLog(
+  limit = 10,
+): Promise<Array<{ message_ts: string; channel_id: string; last_nagged_at: Date }>> {
+  const rows = await getDb()
+    .select()
+    .from(nagLog)
+    .orderBy(desc(nagLog.lastNaggedAt))
+    .limit(limit);
+  return rows.map((r) => ({
+    message_ts: r.messageTs,
+    channel_id: r.channelId,
+    last_nagged_at: r.lastNaggedAt,
+  }));
+}
+
+/** Row counts for the app's tables. Static table list — no user input. */
+export async function getTableCounts(): Promise<Array<{ table: string; rows: number }>> {
+  const tables = [
+    ["settings", settings],
+    ["ignore_persons", ignorePersons],
+    ["ignore_groups", ignoreGroups],
+    ["admin_groups", adminGroups],
+    ["admin_persons", adminPersons],
+    ["nag_log", nagLog],
+    ["thread_actions", threadActions],
+    ["digest_messages", digestMessages],
+  ] as const;
+  const out: Array<{ table: string; rows: number }> = [];
+  for (const [name, table] of tables) {
+    const rows = await getDb().select({ n: count() }).from(table);
+    out.push({ table: name, rows: rows[0]?.n ?? 0 });
+  }
+  return out;
+}
+
+// ── Thread actions (Ignore button) ───────────────────────────────────────────
+
+/** Mark a thread ignored (or re-mark: refreshes actioned_at). */
+export async function upsertThreadAction(
+  messageTs: string,
+  channelId: string,
+  action: string,
+  actorUserId: string,
+): Promise<void> {
+  await getDb()
+    .insert(threadActions)
+    .values({ messageTs, channelId, action, actorUserId })
+    .onConflictDoUpdate({
+      target: threadActions.messageTs,
+      set: { action, actorUserId, actionedAt: new Date(), channelId },
+    });
+}
+
+/**
+ * actioned_at per thread for the given ts list — the handled rule compares
+ * it against the thread's last reply ts.
+ */
+export async function getThreadActions(
+  messageTss: string[],
+): Promise<Map<string, Date>> {
+  if (messageTss.length === 0) return new Map();
+  const rows = await getDb()
+    .select({ messageTs: threadActions.messageTs, actionedAt: threadActions.actionedAt })
+    .from(threadActions)
+    .where(inArray(threadActions.messageTs, messageTss));
+  return new Map(rows.map((r) => [r.messageTs, r.actionedAt]));
+}
+
+// ── Digest messages (reconciliation) ─────────────────────────────────────────
+
+export interface DigestMessageRow {
+  digest_ts: string;
+  channel_id: string;
+  message_ts: string;
+  source_channel_id: string;
+  permalink: string;
+  text_excerpt: string;
+  author_label: string;
+  image_url: string | null;
+}
+
+export async function recordDigestMessages(
+  rows: Array<{
+    digestTs: string;
+    channelId: string;
+    messageTs: string;
+    sourceChannelId: string;
+    permalink: string;
+    textExcerpt: string;
+    authorLabel: string;
+    imageUrl: string | null;
+  }>,
+): Promise<void> {
+  if (rows.length === 0) return;
+  await getDb()
+    .insert(digestMessages)
+    .values(rows)
+    .onConflictDoNothing({ target: [digestMessages.digestTs, digestMessages.messageTs] });
+}
+
+/** All tracked digest rows: which digest message links to which thread. */
+export async function listDigestMessages(): Promise<DigestMessageRow[]> {
+  const rows = await getDb().select().from(digestMessages);
+  return rows.map((r) => ({
+    digest_ts: r.digestTs,
+    channel_id: r.channelId,
+    message_ts: r.messageTs,
+    source_channel_id: r.sourceChannelId,
+    permalink: r.permalink,
+    text_excerpt: r.textExcerpt,
+    author_label: r.authorLabel,
+    image_url: r.imageUrl,
+  }));
+}
+
+export async function deleteDigestMessagesForThreads(
+  messageTss: string[],
+): Promise<void> {
+  if (messageTss.length === 0) return;
+  await getDb()
+    .delete(digestMessages)
+    .where(inArray(digestMessages.messageTs, messageTss));
 }

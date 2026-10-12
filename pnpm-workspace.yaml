@@ -1,3 +1,6 @@
+allowBuilds:
+  esbuild: true
+
 # pnpm v11 workspace settings
 # https://pnpm.io/settings
 

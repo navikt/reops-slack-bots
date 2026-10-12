@@ -1,7 +1,17 @@
 import { NextResponse } from "next/server";
 import { getGroupMemberEmails, requireAdmin } from "../../../../lib/auth";
-import { getSetting, listAdminGroups, listAdminIdents, listGroups, listIgnoreEntries } from "../../../../lib/db";
-import { listJoinedChannels } from "../../../../lib/slack";
+import {
+  getNagLogCount,
+  getSetting,
+  getTableCounts,
+  listAdminGroups,
+  listAdminPersons,
+  listIgnoreGroups,
+  listIgnorePersons,
+  listNagSuppressed,
+  listRecentNagLog,
+} from "../../../../lib/db";
+import { listJoinedChannels, resolveEmailsToUserIds } from "../../../../lib/slack";
 import { logError } from "../../../../lib/log";
 
 export const runtime = "nodejs";
@@ -19,19 +29,25 @@ export async function GET(req: Request): Promise<Response> {
     return NextResponse.json({ error: auth.status }, { status });
   }
 
-  const [frozen, scanWindowDays, minAgeHours, reNagHours, workHoursAware, ignoreList, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminIdents] =
+  const reNagHoursRaw = await getSetting("re_nag_hours");
+  const reNagHoursNum = Number.parseFloat(reNagHoursRaw ?? String(7 * 24));
+
+  const [frozen, scanWindowDays, minAgeHours, workHoursAware, ignorePersons, sourceChannelId, targetChannelId, lastScanRaw, adminGroups, adminPersons, nagLogCount, nagLogRecentRaw, tableCounts, nagSuppressedRaw] =
     await Promise.all([
       getSetting("frozen"),
       getSetting("scan_window_days"),
       getSetting("min_age_hours"),
-      getSetting("re_nag_hours"),
       getSetting("work_hours_aware"),
-      listIgnoreEntries(),
+      listIgnorePersons(),
       getSetting("unanswered_reminder.source_channel_id"),
       getSetting("unanswered_reminder.target_channel_id"),
       getSetting("unanswered_reminder.last_scan"),
       listAdminGroups(),
-      listAdminIdents(),
+      listAdminPersons(),
+      getNagLogCount(),
+      listRecentNagLog(10),
+      getTableCounts(),
+      listNagSuppressed(Number.isNaN(reNagHoursNum) ? 7 * 24 : reNagHoursNum),
     ]);
 
   // Channel list requires a working Slack token; degrade gracefully so the
@@ -76,19 +92,63 @@ export async function GET(req: Request): Promise<Response> {
       }),
     );
 
-  const groups = await listGroups();
+  const groups = await listIgnoreGroups();
   const [groupsWithCounts, adminGroupsWithCounts] = await Promise.all([
     withCounts(groups),
     withCounts(adminGroups),
   ]);
 
+  // "You" card: resolve the caller's navIdent -> email -> Slack UID, and
+  // whether that UID currently lands in the ignore set. Makes "why did the
+  // bot treat my reply as non-team?" answerable from the UI.
+  let you: {
+    navIdent: string;
+    email: string | null;
+    slackUserId: string | null;
+    ignored: boolean;
+  } | null = null;
+  try {
+    const groupEmailLists = await Promise.all(
+      groups.map(async (g) => {
+        try {
+          return await getGroupMemberEmails(g.kind, g.id);
+        } catch {
+          return [] as string[];
+        }
+      }),
+    );
+    const ignoreEmails = [
+      ...new Set([
+        ...ignorePersons.map((p) => p.email),
+        ...groupEmailLists.flat(),
+      ]),
+    ];
+    const email = auth.user.email ?? null;
+    let slackUserId: string | null = null;
+    if (email && !isFrozen) {
+      const ids = await resolveEmailsToUserIds([email]);
+      slackUserId = [...ids][0] ?? null;
+    }
+    let ignored = false;
+    if (slackUserId) {
+      const ignoreSet = await resolveEmailsToUserIds(ignoreEmails);
+      ignored = ignoreSet.has(slackUserId);
+    }
+    you = { navIdent: auth.user.navIdent, email, slackUserId, ignored };
+  } catch (err) {
+    logError({
+      event: "admin.you_resolve_failed",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   return NextResponse.json({
     frozen: isFrozen,
     scanWindowDays: Number.parseInt(scanWindowDays ?? "14", 10),
     minAgeHours: Number.parseInt(minAgeHours ?? "1", 10),
-    reNagHours: Number.parseFloat(reNagHours ?? String(7 * 24)),
+    reNagHours: reNagHoursNum,
     workHoursAware: (workHoursAware ?? "true") !== "false",
-    ignoreList: ignoreList.map((r) => ({
+    ignorePersons: ignorePersons.map((r) => ({
       id: r.id,
       kind: r.kind,
       label: r.label,
@@ -102,7 +162,20 @@ export async function GET(req: Request): Promise<Response> {
     lastScan,
     groups: groupsWithCounts,
     adminGroups: adminGroupsWithCounts,
-    adminIdents,
-    adminBootstrap: adminGroups.length === 0 && adminIdents.length === 0,
+    adminPersons,
+    adminBootstrap: adminGroups.length === 0 && adminPersons.length === 0,
+    nagLogCount,
+    nagLogRecent: nagLogRecentRaw.map((r) => ({
+      message_ts: r.message_ts,
+      channel_id: r.channel_id,
+      last_nagged_at: r.last_nagged_at.toISOString(),
+    })),
+    nagSuppressed: nagSuppressedRaw.map((r) => ({
+      message_ts: r.message_ts,
+      channel_id: r.channel_id,
+      next_eligible_at: r.next_eligible_at.toISOString(),
+    })),
+    tableCounts,
+    you,
   });
 }

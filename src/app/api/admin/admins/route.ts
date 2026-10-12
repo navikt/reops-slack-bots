@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { requireAdmin, type GroupKind } from "../../../../lib/auth";
 import {
   addAdminGroup,
-  addAdminIdent,
+  addAdminPerson,
   listAdminGroups,
-  listAdminIdents,
+  listAdminPersons,
   removeAdminGroup,
-  removeAdminIdent,
+  removeAdminPerson,
 } from "../../../../lib/db";
 import { log } from "../../../../lib/log";
 
@@ -21,7 +21,7 @@ export async function GET(req: Request): Promise<Response> {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
   }
-  const [groups, idents] = await Promise.all([listAdminGroups(), listAdminIdents()]);
+  const [groups, idents] = await Promise.all([listAdminGroups(), listAdminPersons()]);
   return NextResponse.json({ groups, idents });
 }
 
@@ -41,7 +41,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   if (body.navIdent) {
-    await addAdminIdent(body.navIdent, body.label ?? null);
+    await addAdminPerson(body.navIdent, body.label ?? null);
     log({ event: "admin.admin_ident_added", navIdent: body.navIdent, by: auth.user.navIdent });
     return NextResponse.json({ ok: true });
   }
@@ -71,7 +71,7 @@ export async function DELETE(req: Request): Promise<Response> {
   }
 
   if (body.navIdent) {
-    await removeAdminIdent(body.navIdent);
+    await removeAdminPerson(body.navIdent);
     log({ event: "admin.admin_ident_removed", navIdent: body.navIdent, by: auth.user.navIdent });
     return NextResponse.json({ ok: true });
   }

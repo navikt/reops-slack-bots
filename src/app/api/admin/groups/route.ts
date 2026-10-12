@@ -4,7 +4,7 @@ import {
   searchGroups,
   type GroupKind,
 } from "../../../../lib/auth";
-import { addGroup, listGroups, removeGroup } from "../../../../lib/db";
+import { addIgnoreGroup, listIgnoreGroups, removeIgnoreGroup } from "../../../../lib/db";
 import { log } from "../../../../lib/log";
 
 export const runtime = "nodejs";
@@ -52,7 +52,7 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "kind, id and label are required" }, { status: 400 });
   }
 
-  await addGroup(body.id, body.kind as GroupKind, body.label);
+  await addIgnoreGroup(body.id, body.kind as GroupKind, body.label);
   log({ event: "admin.group_added", group: `${body.kind}:${body.id}`, by: auth.user.navIdent });
   return NextResponse.json({ ok: true });
 }
@@ -76,7 +76,7 @@ export async function DELETE(req: Request): Promise<Response> {
     return NextResponse.json({ error: "kind and id are required" }, { status: 400 });
   }
 
-  await removeGroup(body.id, body.kind);
+  await removeIgnoreGroup(body.id, body.kind);
   log({ event: "admin.group_removed", group: `${body.kind}:${body.id}`, by: auth.user.navIdent });
   return NextResponse.json({ ok: true });
 }

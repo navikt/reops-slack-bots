@@ -1,6 +1,6 @@
 import { getToken, validateToken, parseAzureUserToken } from "@navikt/oasis";
 import { log, logError } from "./log";
-import { listAdminGroups, listAdminIdents } from "./db";
+import { listAdminGroups, listAdminPersons } from "./db";
 
 /**
  * Stable, single Team Catalog instance — Nav only has one real one
@@ -235,17 +235,17 @@ export async function requireAdmin(req: Request): Promise<TeamCheckResult> {
       return { status: "unauthenticated" };
     }
 
-    const [adminGroups, adminIdents] = await Promise.all([
+    const [adminGroups, adminPersons] = await Promise.all([
       listAdminGroups(),
-      listAdminIdents(),
+      listAdminPersons(),
     ]);
-    if (adminGroups.length === 0 && adminIdents.length === 0) {
+    if (adminGroups.length === 0 && adminPersons.length === 0) {
       // Bootstrap: nobody has claimed /admin yet.
       log({ event: "auth.bootstrap_admin", navIdent: user.navIdent });
       return { status: "ok", user };
     }
 
-    if (adminIdents.some((a) => a.nav_ident === user.navIdent)) {
+    if (adminPersons.some((a) => a.nav_ident === user.navIdent)) {
       return { status: "ok", user };
     }
 

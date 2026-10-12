@@ -1,16 +1,23 @@
 import {
+  deleteDigestMessagesForThreads,
   getRecentlyNaggedTs,
   getSetting,
-  listGroups,
+  getThreadActions,
+  listDigestMessages,
+  listIgnoreGroups,
   listIgnoreEmails,
+  recordDigestMessages,
   setSetting,
   upsertNagLog,
 } from "../../lib/db";
 import {
+  deleteDigestMessage,
   expandIgnoreSet,
   fetchOldUnsolvedMessages,
   isThreadHandled,
   postUnansweredDigest,
+  resolveUserLabels,
+  updateUnansweredDigest,
 } from "../../lib/slack";
 import { getGroupMemberEmails } from "../../lib/auth";
 import { log, logDebug, logError } from "../../lib/log";
@@ -21,7 +28,8 @@ const DEFAULT_MIN_MESSAGE_AGE_HOURS = 1;
 /** Cooldown in hours before a nagged message is eligible for another digest. */
 const DEFAULT_RE_NAG_HOURS = 7 * 24;
 
-export async function runUnansweredReminder(): Promise<void> {
+export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boolean }): Promise<void> {
+  const ignoreReNagCooldown = opts?.ignoreReNagCooldown ?? false;
   const frozen = (await getSetting("frozen")) ?? "false";
   if (frozen === "true") {
     log({ event: "bot.skipped", bot: "unanswered-reminder", reason: "frozen" });
@@ -76,7 +84,7 @@ export async function runUnansweredReminder(): Promise<void> {
   // Catalog groups (team/cluster/seksjon, recursing into child teams).
   // Emails resolve to Slack UIDs via users.lookupByEmail.
   const manualEmails = await listIgnoreEmails();
-  const groups = await listGroups();
+  const groups = await listIgnoreGroups();
   const groupEmails: string[] = [];
   for (const g of groups) {
     try {
@@ -121,18 +129,29 @@ export async function runUnansweredReminder(): Promise<void> {
     }
   }
 
-  // Handled rule (see isThreadHandled): :solved: and team replies are
-  // equal-rank signals, recency decides — re-openable conversations. Runs on
-  // data embedded in conversations.history, so no extra Slack calls.
+  // Handled rule (see isThreadHandled): team reply last, manual Suppress,
+  // or :solved: recency — re-openable conversations. Suppress marks come
+  // from thread_actions (digest Suppress button), compared vs last reply ts.
+  const actionsByTs = await getThreadActions(candidates.map((m) => m.ts));
+
   const open: typeof candidates = [];
+  const handledTs: string[] = [];
   for (const m of candidates) {
     const lastReplyUser = m.latestReplies[m.latestReplies.length - 1]?.user ?? null;
-    if (isThreadHandled(m, ignoreSet)) {
+    const ignoredAt = actionsByTs.get(m.ts);
+    const handled = isThreadHandled(
+      { ...m, ignoredAt: ignoredAt ? ignoredAt.getTime() / 1000 : null },
+      ignoreSet,
+    );
+    if (handled) {
+      handledTs.push(m.ts);
       logDebug({
         event: "bot.decision",
         ts: m.ts,
         verdict: "skip",
-        why: "handled (team reply last, or :solved: newer than last non-team activity)",
+        why: ignoredAt
+          ? "handled (ignored via digest button)"
+          : "handled (team reply last, or :solved: newer than last non-team activity)",
         last_reply_user: lastReplyUser,
       });
       continue;
@@ -152,10 +171,12 @@ export async function runUnansweredReminder(): Promise<void> {
     open.push(m);
   }
 
-  const recentlyNagged = await getRecentlyNaggedTs(
-    open.map((m) => m.ts),
-    reNagHours,
-  );
+  const recentlyNagged = ignoreReNagCooldown
+    ? new Set<string>()
+    : await getRecentlyNaggedTs(
+        open.map((m) => m.ts),
+        reNagHours,
+      );
 
   const toNag = open.filter((m) => !recentlyNagged.has(m.ts));
 
@@ -177,6 +198,7 @@ export async function runUnansweredReminder(): Promise<void> {
     scan_window_days: scanWindowDays,
     re_nag_hours: reNagHours,
     work_hours_aware: workHoursAware,
+    ...(ignoreReNagCooldown ? { forced: true } : {}),
   });
 
   await setSetting(
@@ -188,11 +210,52 @@ export async function runUnansweredReminder(): Promise<void> {
     }),
   );
 
+  // Digest lifecycle: ONE living digest per target channel. When anything is
+  // due to (re-)nag, all previously tracked digests are deleted and a single
+  // fresh digest with the FULL open set is posted — the channel always shows
+  // one current message at the bottom. Scans with nothing new to nag only
+  // shrink existing digests in place (handled threads drop off).
+  const trackedBefore = await listDigestMessages();
+
   if (toNag.length > 0) {
     try {
-      await postUnansweredDigest(
-        targetChannel,
-        toNag.map((m) => ({ ts: m.ts, permalink: m.permalink })),
+      for (const row of new Map(trackedBefore.map((r) => [r.digest_ts, r])).values()) {
+        await deleteDigestMessage(row.channel_id, row.digest_ts);
+      }
+      await deleteDigestMessagesForThreads(trackedBefore.map((r) => r.message_ts));
+
+      // Preview mirrors the link target: latest reply (author + text +
+      // image) when the thread has replies, the parent message otherwise.
+      const previewUsers = open.map((m) => m.latestUser ?? m.user);
+      const labels = await resolveUserLabels(previewUsers);
+      const items = open.map((m, i) => {
+        const hasReply = m.latestUser !== null;
+        const authorId = previewUsers[i];
+        return {
+          ts: m.ts,
+          permalink: m.permalink,
+          text: hasReply ? (m.latestText ?? "") : m.text,
+          authorLabel:
+            (authorId ? labels.get(authorId) : undefined) ??
+            authorId ??
+            m.user,
+          imageUrl: m.latestImage,
+        };
+      });
+      const posted = await postUnansweredDigest(targetChannel, items);
+      await recordDigestMessages(
+        posted.flatMap((p) =>
+          p.items.map((item) => ({
+            digestTs: p.digestTs,
+            channelId: targetChannel,
+            messageTs: item.ts,
+            sourceChannelId: sourceChannel,
+            permalink: item.permalink,
+            textExcerpt: item.text.slice(0, 500),
+            authorLabel: item.authorLabel,
+            imageUrl: item.imageUrl,
+          })),
+        ),
       );
       for (const m of toNag) {
         await upsertNagLog(m.ts, sourceChannel);
@@ -200,6 +263,59 @@ export async function runUnansweredReminder(): Promise<void> {
     } catch (err) {
       logError({
         event: "bot.nag_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else {
+    // Nothing new to nag: reconcile in place — drop handled/suppressed
+    // threads from tracked digests, delete empties.
+    try {
+      const tracked = trackedBefore;
+      if (tracked.length > 0) {
+        const openTs = new Set(open.map((m) => m.ts));
+        const byDigest = new Map<
+          string,
+          { channelId: string; rows: typeof tracked }
+        >();
+        for (const row of tracked) {
+          const entry = byDigest.get(row.digest_ts) ?? {
+            channelId: row.channel_id,
+            rows: [],
+          };
+          entry.rows.push(row);
+          byDigest.set(row.digest_ts, entry);
+        }
+        const stale: string[] = [];
+        for (const [digestTs, info] of byDigest) {
+          const remainingRows = info.rows.filter((r) => openTs.has(r.message_ts));
+          await updateUnansweredDigest(
+            info.channelId,
+            digestTs,
+            remainingRows.map((r) => {
+              const live = open.find((m) => m.ts === r.message_ts);
+              return {
+                ts: r.message_ts,
+                // Live permalink from the current scan (points at latest
+                // activity); fall back to the as-posted one.
+                permalink: live?.permalink ?? r.permalink,
+                text: live?.text ?? r.text_excerpt,
+                authorLabel: r.author_label,
+                imageUrl: r.image_url,
+              };
+            }),
+            open.length,
+          );
+          stale.push(
+            ...info.rows
+              .filter((r) => !openTs.has(r.message_ts))
+              .map((r) => r.message_ts),
+          );
+        }
+        await deleteDigestMessagesForThreads(stale);
+      }
+    } catch (err) {
+      logError({
+        event: "bot.digest_reconcile_failed",
         message: err instanceof Error ? err.message : String(err),
       });
     }

@@ -11,6 +11,7 @@ function msg(partial: Partial<Msg>): Msg {
     ts: "1000.000000",
     latestReplies: [],
     parentSolved: false,
+    ignoredAt: null,
     ...partial,
   };
 }
@@ -123,4 +124,34 @@ void test("non-team reply, then team reply without emoji → handled", () => {
     ),
     true,
   );
+});
+
+void test("ignored after last reply → handled", () => {
+  assert.equal(
+    isThreadHandled(
+      msg({
+        ignoredAt: 4000,
+        latestReplies: [{ user: "U_ASKER", ts: 3000, solved: false }],
+      }),
+      TEAM,
+    ),
+    true,
+  );
+});
+
+void test("ignored, then newer non-team reply → re-opened", () => {
+  assert.equal(
+    isThreadHandled(
+      msg({
+        ignoredAt: 3000,
+        latestReplies: [{ user: "U_ASKER", ts: 4000, solved: false }],
+      }),
+      TEAM,
+    ),
+    false,
+  );
+});
+
+void test("ignored with no replies at all → handled", () => {
+  assert.equal(isThreadHandled(msg({ ignoredAt: 2000 }), TEAM), true);
 });

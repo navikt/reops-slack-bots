@@ -1,33 +1,40 @@
 /**
  * Is an unanswered-message candidate already handled?
  *
- * :solved: and a team reply are equal-rank "handled" signals, and recency
- * decides. All inputs come embedded in conversations.history (the 3 newest
- * replies), so this is pure data — no Slack call:
+ * Handled signals, in check order:
  *
  * - Team member wrote the last reply → handled.
- * - Otherwise: the newest :solved: (parent or reply, by message ts) wins if
- *   no non-team reply is newer than it. Anyone — team or the asker — can set
- *   it; a follow-up non-team question re-opens the thread, and re-adding
- *   :solved: closes it again.
+ * - Manually suppressed via the digest's Suppress button, and the mark is
+ *   newer than the last reply → handled. Later thread activity re-opens it.
+ * - The newest :solved: (parent or reply, by message ts) wins if no non-team
+ *   reply is newer than it. Anyone — team or the asker — can set it; a
+ *   follow-up non-team question re-opens the thread, and re-adding :solved:
+ *   closes it again.
  *
- * Caveat: with only the 3 newest replies embedded, a :solved: on an older
- * reply scrolled out of the window is missed (worst case: one extra nag,
- * then someone re-marks). Acceptable vs a conversations.replies call per
- * thread.
+ * Inputs are the thread's full reply list (hydrated via
+ * conversations.replies — history's embedded latest_replies proved
+ * unreliable on the wire), so this is pure data — no Slack call here.
  */
 export function isThreadHandled(
   m: {
     ts: string;
     parentSolved: boolean;
     latestReplies: Array<{ user: string | null; ts: number; solved: boolean }>;
+    /** Manual Ignore-mark time (seconds, Slack ts domain) — null if none. */
+    ignoredAt: number | null;
   },
   teamUserIds: ReadonlySet<string>,
 ): boolean {
   const last = m.latestReplies[m.latestReplies.length - 1];
   if (last?.user && teamUserIds.has(last.user)) return true;
 
-  // Newest solve signal: parent (ts = message birth) or any embedded reply.
+  // Manual ignore beats everything below it, until newer thread activity.
+  if (m.ignoredAt !== null) {
+    const newestReplyTs = Math.max(0, ...m.latestReplies.map((r) => r.ts));
+    if (m.ignoredAt >= newestReplyTs) return true;
+  }
+
+  // Newest solve signal: parent (ts = message birth) or any reply.
   const newestSolveTs = Math.max(
     m.parentSolved ? Number.parseFloat(m.ts) : 0,
     ...m.latestReplies.filter((r) => r.solved).map((r) => r.ts),

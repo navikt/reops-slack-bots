@@ -6,12 +6,12 @@ import {
   BodyShort,
   Box,
   Button,
+  ErrorMessage,
   ExpansionCard,
   Heading,
   HStack,
   List,
   Loader,
-  Modal,
   Select,
   Switch,
   Table,
@@ -21,7 +21,7 @@ import { TrashIcon } from "@navikt/aksel-icons";
 import { UNSAFE_Combobox as Combobox } from "@navikt/ds-react";
 import "./admin.css";
 
-interface IgnoreEntry {
+interface IgnorePersonEntry {
   id: number;
   kind: "person";
   label: string | null;
@@ -67,9 +67,33 @@ interface LastScan {
   nagged: number;
 }
 
-interface AdminIdentEntry {
+interface AdminPersonEntry {
   nav_ident: string;
   label: string | null;
+}
+
+interface NagLogEntry {
+  message_ts: string;
+  channel_id: string;
+  last_nagged_at: string;
+}
+
+interface NagSuppressedEntry {
+  message_ts: string;
+  channel_id: string;
+  next_eligible_at: string;
+}
+
+interface YouEntry {
+  navIdent: string;
+  email: string | null;
+  slackUserId: string | null;
+  ignored: boolean;
+}
+
+interface TableCount {
+  table: string;
+  rows: number;
 }
 
 interface AdminState {
@@ -78,7 +102,7 @@ interface AdminState {
   minAgeHours: number;
   reNagHours: number;
   workHoursAware: boolean;
-  ignoreList: IgnoreEntry[];
+  ignorePersons: IgnorePersonEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
   channels: JoinedChannel[];
@@ -86,8 +110,13 @@ interface AdminState {
   lastScan: LastScan | null;
   groups: GroupEntry[];
   adminGroups: GroupEntry[];
-  adminIdents: AdminIdentEntry[];
+  adminPersons: AdminPersonEntry[];
   adminBootstrap: boolean;
+  nagLogCount: number;
+  nagLogRecent: NagLogEntry[];
+  nagSuppressed: NagSuppressedEntry[];
+  tableCounts: TableCount[];
+  you: YouEntry | null;
 }
 
 /** Re-remind cooldown choices, in hours (0.5 = 30 minutes). */
@@ -752,29 +781,16 @@ export function AdminClient() {
     }
   };
 
-  const [wipeOpen, setWipeOpen] = useState(false);
-  const [wipeDone, setWipeDone] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
-  const wipeDb = async () => {
-    setBusy(true);
-    setActionError(null);
-    try {
-      const res = await fetch("/api/admin/wipe", { method: "POST" });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        setActionError(data?.error ?? `Wipe failed (${res.status})`);
-        return;
-      }
-      setWipeDone(true);
-      await load();
-    } finally {
-      setBusy(false);
+  const runTestAction = async (action: "scan_force" | "ping") => {
+    // Frozen is enforced server-side too (409), but catching it here keeps
+    // the feedback next to the button instead of the global action error.
+    if (state?.frozen) {
+      setScanError("Bot is off — turn it on above to run a scan.");
+      return;
     }
-  };
-
-  const runTestAction = async (action: "scan" | "ping") => {
+    setScanError(null);
     setBusy(true);
     setActionError(null);
     try {
@@ -787,7 +803,12 @@ export function AdminClient() {
         const data = (await res.json().catch(() => null)) as {
           error?: string;
         } | null;
-        setActionError(data?.error ?? `Action failed (${res.status})`);
+        const msg = data?.error ?? `Action failed (${res.status})`;
+        if (res.status === 409) {
+          setScanError(msg);
+        } else {
+          setActionError(msg);
+        }
         return;
       }
       await load();
@@ -1081,7 +1102,7 @@ export function AdminClient() {
                   title="Individuals"
                   description="Search by name. Matched to Slack via email."
                   emptyText="Usually not needed when the team group covers it."
-                  people={state.ignoreList}
+                  people={state.ignorePersons}
                   busy={busy}
                   options={peopleOptions}
                   searching={searching}
@@ -1133,7 +1154,7 @@ export function AdminClient() {
                 title="Admin individuals"
                 description="Search by name. Matched by Nav ident — no email needed."
                 emptyText="Usually not needed when a team group covers it."
-                people={state.adminIdents}
+                people={state.adminPersons}
                 busy={busy}
                 options={adminPeopleOptions}
                 searching={adminPeopleSearching}
@@ -1161,12 +1182,6 @@ export function AdminClient() {
               </ExpansionCard.Header>
               <ExpansionCard.Content>
                 <VStack gap="space-12" align="start">
-                  <BodyShort textColor="subtle">
-                    "Run scan now" does a real hourly scan immediately. "Post
-                    test digest" sends a fake digest to the reminder channel to
-                    verify wiring.
-                  </BodyShort>
-
                   <Switch
                     checked={state.workHoursAware}
                     onChange={(e) =>
@@ -1176,89 +1191,186 @@ export function AdminClient() {
                   >
                     Smart work-hours awareness
                   </Switch>
-                  {state.frozen ? (
-                    <BodyShort textColor="subtle">
-                      Bot is off — turn it on to run a scan or post a test
-                      digest.
-                    </BodyShort>
-                  ) : (
+
+                  <div>
                     <HStack gap="space-8" wrap>
                       <Button
                         variant="secondary"
                         size="small"
-                        onClick={() => void runTestAction("scan")}
+                        loading={busy}
+                        onClick={() => void runTestAction("scan_force")}
                       >
-                        Run scan now
+                        Run scan now (ignore cooldown)
                       </Button>
-                      {state.targetChannelId && (
-                        <Button
-                          variant="secondary"
-                          size="small"
-                          onClick={() => void runTestAction("ping")}
-                        >
-                          Post test digest
-                        </Button>
-                      )}
-                    </HStack>
-                  )}
-
-                  <div>
-                    <Heading level="5" size="xsmall" spacing>
-                      Danger zone
-                    </Heading>
-                    <BodyShort textColor="subtle" spacing>
-                      Drops all tables (settings, ignore lists, admin groups,
-                      nag log) and re-runs migrations — the app returns to
-                      fresh-boot state, including open-bootstrap admin mode.
-                    </BodyShort>
-                    {wipeDone ? (
-                      <Alert variant="success" size="small">
-                        Database wiped and rebuilt.
-                      </Alert>
-                    ) : (
                       <Button
-                        variant="danger"
+                        variant="secondary"
                         size="small"
-                        onClick={() => setWipeOpen(true)}
+                        loading={busy}
+                        onClick={() => void runTestAction("ping")}
                       >
-                        Wipe database…
+                        Post test digest
                       </Button>
+                    </HStack>
+                    {/* Fixed one-line slot: error text appears without shifting layout. */}
+                    <div style={{ minHeight: "1.5rem", marginTop: "0.25rem" }}>
+                      {scanError ? (
+                        <ErrorMessage size="small">{scanError}</ErrorMessage>
+                      ) : (
+                        <BodyShort textColor="subtle" size="small">
+                          Scan ignores the re-nag cooldown — already-reminded
+                          messages are included. Test digest posts a fake one.
+                        </BodyShort>
+                      )}
+                    </div>
+                    {state.lastScan && (
+                      <BodyShort textColor="subtle" size="small">
+                        Last scan:{" "}
+                        {new Date(state.lastScan.at).toLocaleString("en-GB", {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        })}{" "}
+                        · {state.lastScan.unsolved} unanswered ·{" "}
+                        {state.lastScan.nagged} reminded
+                      </BodyShort>
                     )}
                   </div>
+
+                  {/* Verbose debug info — nested expandable, admins only. */}
+                  <ExpansionCard aria-label="Diagnostics" size="small">
+                    <ExpansionCard.Header>
+                      <ExpansionCard.Title size="small">
+                        Diagnostics
+                      </ExpansionCard.Title>
+                      <ExpansionCard.Description>
+                        Effective config, reminder suppression, table contents.
+                      </ExpansionCard.Description>
+                    </ExpansionCard.Header>
+                    <ExpansionCard.Content>
+                      <VStack gap="space-16" align="start">
+                        {state.you && (
+                          <div>
+                            <Heading level="5" size="xsmall" spacing>
+                              You
+                            </Heading>
+                            <List size="small">
+                              <List.Item>
+                                {state.you.navIdent}
+                                {state.you.email
+                                  ? ` · ${state.you.email}`
+                                  : " · no email (dev bypass?)"}
+                              </List.Item>
+                              <List.Item>
+                                Slack user:{" "}
+                                {state.you.slackUserId ?? "unresolved"}
+                                {state.you.slackUserId &&
+                                  (state.you.ignored
+                                    ? " · in ignore set — your replies mark threads handled"
+                                    : " · NOT in ignore set — your replies won't mark threads handled")}
+                              </List.Item>
+                            </List>
+                          </div>
+                        )}
+
+                        <div>
+                          <Heading level="5" size="xsmall" spacing>
+                            Effective config
+                          </Heading>
+                          <List size="small">
+                            <List.Item>
+                              frozen: {String(state.frozen)}
+                            </List.Item>
+                            <List.Item>
+                              scan window: {state.scanWindowDays} days · grace:{" "}
+                              {state.minAgeHours}h · re-remind:{" "}
+                              {state.reNagHours}h · work-hours aware:{" "}
+                              {String(state.workHoursAware)}
+                            </List.Item>
+                            <List.Item>
+                              source channel: {state.sourceChannelId ?? "—"} ·
+                              target channel: {state.targetChannelId ?? "—"}
+                            </List.Item>
+                            {state.channelsError && (
+                              <List.Item>
+                                channel list error: {state.channelsError}
+                              </List.Item>
+                            )}
+                          </List>
+                        </div>
+
+                        <div>
+                          <Heading level="5" size="xsmall" spacing>
+                            Reminder suppression ({state.nagSuppressed.length})
+                          </Heading>
+                          {state.nagSuppressed.length === 0 ? (
+                            <BodyShort textColor="subtle" size="small">
+                              Nothing suppressed — every unanswered message is
+                              eligible for the next digest.
+                            </BodyShort>
+                          ) : (
+                            <List size="small">
+                              {state.nagSuppressed.map((n) => (
+                                <List.Item key={n.message_ts}>
+                                  {n.channel_id} · {n.message_ts} · eligible{" "}
+                                  {new Date(n.next_eligible_at).toLocaleString(
+                                    "en-GB",
+                                    { dateStyle: "short", timeStyle: "short" },
+                                  )}
+                                </List.Item>
+                              ))}
+                            </List>
+                          )}
+                        </div>
+
+                        <div>
+                          <Heading level="5" size="xsmall" spacing>
+                            Database
+                          </Heading>
+                          <Table size="small">
+                            <Table.Body>
+                              {state.tableCounts.map((t) => (
+                                <Table.Row key={t.table}>
+                                  <Table.HeaderCell
+                                    scope="row"
+                                    className="tableCell"
+                                  >
+                                    {t.table}
+                                  </Table.HeaderCell>
+                                  <Table.DataCell
+                                    textSize="small"
+                                    className="tableCell tableCellSubtle"
+                                  >
+                                    {t.rows} {t.rows === 1 ? "row" : "rows"}
+                                  </Table.DataCell>
+                                </Table.Row>
+                              ))}
+                            </Table.Body>
+                          </Table>
+                          {state.nagLogCount > 0 && (
+                            <>
+                              <BodyShort textColor="subtle" size="small" spacing>
+                                Latest {Math.min(10, state.nagLogCount)} of{" "}
+                                {state.nagLogCount} nag_log rows:
+                              </BodyShort>
+                              <List size="small">
+                                {state.nagLogRecent.map((n) => (
+                                  <List.Item key={n.message_ts}>
+                                    {n.channel_id} · {n.message_ts} ·{" "}
+                                    {new Date(n.last_nagged_at).toLocaleString(
+                                      "en-GB",
+                                      { dateStyle: "short", timeStyle: "short" },
+                                    )}
+                                  </List.Item>
+                                ))}
+                              </List>
+                            </>
+                          )}
+                        </div>
+                      </VStack>
+                    </ExpansionCard.Content>
+                  </ExpansionCard>
                 </VStack>
               </ExpansionCard.Content>
             </ExpansionCard>
-
-            <Modal
-              open={wipeOpen}
-              onClose={() => setWipeOpen(false)}
-              header={{ heading: "Wipe the database?" }}
-              width="small"
-            >
-              <Modal.Body>
-                <BodyShort>
-                  This drops every table and rebuilds from migrations.
-                  Settings, ignore lists, admin groups and nag history are
-                  permanently gone. The bot reverts to frozen until
-                  reconfigured.
-                </BodyShort>
-              </Modal.Body>
-              <Modal.Footer>
-                <Button
-                  variant="danger"
-                  loading={busy}
-                  onClick={() => {
-                    setWipeOpen(false);
-                    void wipeDb();
-                  }}
-                >
-                  Yes, wipe everything
-                </Button>
-                <Button variant="secondary" onClick={() => setWipeOpen(false)}>
-                  Cancel
-                </Button>
-              </Modal.Footer>
-            </Modal>
           </VStack>
         </section>
       </Box>

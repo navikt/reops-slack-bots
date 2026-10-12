@@ -16,6 +16,7 @@
     "@navikt/ds-react": "8.15.0",
     "@navikt/oasis": "4.1.1",
     "@slack/web-api": "^8.2.0",
+    "drizzle-orm": "^0.45.4",
     "next": "^16.2.10",
     "pg": "^8.23.1",
     "react": "^19.2.7",
@@ -26,6 +27,7 @@
     "@types/pg": "^8.23.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.31.11",
     "typescript": "^6.0.3"
   }
 }

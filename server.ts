@@ -1,4 +1,4 @@
-import { runMigrations } from "./src/lib/db";
+import { runMigrations } from "./src/lib/migrate";
 import { log, logError } from "./src/lib/log";
 import { startJob, type BotJob } from "./src/lib/runner";
 

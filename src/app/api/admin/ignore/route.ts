@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth";
-import { addIgnoreEntry, removeIgnoreEntry } from "../../../../lib/db";
+import { addIgnorePerson, removeIgnorePerson } from "../../../../lib/db";
 import { log, logError } from "../../../../lib/log";
 
 export const runtime = "nodejs";
@@ -30,7 +30,7 @@ export async function POST(req: Request): Promise<Response> {
   const navIdent = body.navIdent?.trim() || null;
 
   try {
-    const row = await addIgnoreEntry(email, label, navIdent);
+    const row = await addIgnorePerson(email, label, navIdent);
     log({ event: "admin.ignore_added", email, by: auth.user.navIdent });
     return NextResponse.json({
       id: row.id,
@@ -64,7 +64,7 @@ export async function DELETE(req: Request): Promise<Response> {
     return NextResponse.json({ error: "id (heltall) er påkrevd" }, { status: 400 });
   }
 
-  const removed = await removeIgnoreEntry(body.id);
+  const removed = await removeIgnorePerson(body.id);
   if (!removed) {
     return NextResponse.json({ error: "Fant ikke raden" }, { status: 404 });
   }

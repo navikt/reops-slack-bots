@@ -9,10 +9,13 @@ export const runtime = "nodejs";
 
 /**
  * Test tools for the unanswered-reminder behavior.
- *  - action=scan:  runs the real hourly job immediately (respects frozen,
- *    writes to nag_log, posts real reminders if candidates exist).
- *  - action=ping:  posts a clearly-marked fake reminder to the configured
- *    target channel. Wiring check only — no nag_log write, no scan.
+ *  - action=scan_force:  runs the real hourly job immediately, ignoring the
+ *                        re-nag cooldown — messages already reminded about are
+ *                        included. Respects frozen (409); nag_log is written
+ *                        and real reminders are posted.
+ *  - action=ping:        posts a clearly-marked fake reminder to the configured
+ *                        target channel. Wiring check only — no nag_log write,
+ *                        no scan.
  */
 export async function POST(req: Request): Promise<Response> {
   const auth = await requireAdmin(req);
@@ -28,15 +31,19 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "Malformed JSON" }, { status: 400 });
   }
 
-  if (body.action === "scan") {
+  if (body.action === "scan_force") {
     if ((await getSetting("frozen")) === "true") {
       return NextResponse.json({ error: "Bot is frozen" }, { status: 409 });
     }
-    log({ event: "admin.test_scan", by: auth.user.navIdent });
+    log({ event: "admin.test_scan_force", by: auth.user.navIdent });
     const { runUnansweredReminder } = await import(
       "../../../../bots/unanswered-reminder/run"
     );
-    await runJob({ name: "unanswered-reminder-manual", intervalMs: 0, run: runUnansweredReminder });
+    await runJob({
+      name: "unanswered-reminder-manual-forced",
+      intervalMs: 0,
+      run: () => runUnansweredReminder({ ignoreReNagCooldown: true }),
+    });
     return NextResponse.json({ ok: true });
   }
 
@@ -52,6 +59,9 @@ export async function POST(req: Request): Promise<Response> {
       {
         ts: String(Date.now() / 1000),
         permalink: "https://github.com/navikt/reops-slack-bots",
+        text: "Test digest — wiring check from /admin. Not a real unanswered message.",
+        authorLabel: "reops-bots",
+        imageUrl: null,
       },
     ]);
     return NextResponse.json({ ok: true });
