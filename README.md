@@ -60,11 +60,15 @@ Without `DATABASE_URL` the server starts but migrations/jobs are skipped.
 
 ## Local testing limits
 
-- **Webhooks (slack "action buttons", DMs) don't work locally** — Slack must reach
-  `/api/slack/interactions`. In dev these were tested against the deployed
-  app. To test live, tunnel and repoint the app's Interactivity URL:
-  `cloudflared tunnel --url http://localhost:9092` (or ngrok) →
-  `https://<tunnel>/api/slack/interactions`.
+- **Webhooks (digest buttons, DMs) don't work out of the box** — Slack
+  delivers them over the internet, so it needs a public URL that forwards to
+  your local app. Options:
+  - Test against the deployed app instead (what we did in dev).
+  - Expose localhost with a tunnel, e.g. `ngrok http 9092` (free account
+    required) or `cloudflared tunnel --url http://localhost:9092`. Then point
+    the Slack app's **Interactivity Request URL** (api.slack.com → your app →
+    Interactivity & Shortcuts) at `https://<tunnel-url>/api/slack/interactions`
+    while testing, and change it back when done.
 - **Admin auth** — Azure AD + Team Catalog only work behind naisdevice or
   deployed; use `ADMIN_DEV_BYPASS=true` locally.
 
