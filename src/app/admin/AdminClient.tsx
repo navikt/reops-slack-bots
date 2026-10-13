@@ -842,7 +842,7 @@ export function AdminClient() {
 
   const [scanError, setScanError] = useState<string | null>(null);
 
-  const runTestAction = async (action: "scan_force" | "ping") => {
+  const runTestAction = async (action: "scan_force" | "ping" | "dm") => {
     // Frozen is enforced server-side too (409), but catching it here keeps
     // the feedback next to the button instead of the global action error.
     if (state?.frozen) {
