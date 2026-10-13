@@ -162,10 +162,22 @@ async function getSelfIdentity(): Promise<{ userId: string; botId: string }> {
  * Slack permalinks are deterministic, documented URL math — skip the
  * chat.getPermalink API call entirely:
  *   https://{workspace}.slack.com/archives/{channel}/p{ts without the dot}
+ *
+ * Thread replies need `?thread_ts={parent ts WITH dot}&cid={channelId}`
+ * appended or the mobile app lands the user in the channel instead of
+ * opening the thread at the reply. Desktop tolerates the bare form; mobile
+ * does not. This matches what chat.getPermalink returns for replies.
  */
-export function buildPermalink(channelId: string, ts: string): string {
+export function buildPermalink(
+  channelId: string,
+  ts: string,
+  threadParentTs?: string,
+): string {
   const workspace = process.env.SLACK_WORKSPACE_SUBDOMAIN ?? "nav";
-  return `https://${workspace}.slack.com/archives/${channelId}/p${ts.replace(".", "")}`;
+  const base = `https://${workspace}.slack.com/archives/${channelId}/p${ts.replace(".", "")}`;
+  return threadParentTs
+    ? `${base}?thread_ts=${threadParentTs}&cid=${channelId}`
+    : base;
 }
 
 export interface UnsolvedMessage {
@@ -280,7 +292,7 @@ export async function fetchOldUnsolvedMessages(
       }));
       const newest = replies[replies.length - 1];
       if (newest?.ts) {
-        m.permalink = buildPermalink(channelId, newest.ts);
+        m.permalink = buildPermalink(channelId, newest.ts, m.ts);
         m.latestUser = newest.user ?? null;
         m.latestText = newest.text ?? "";
         // Image attachments: Slack file URLs (thumb_*/url_private) are
