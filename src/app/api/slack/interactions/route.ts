@@ -110,6 +110,25 @@ export async function POST(req: Request): Promise<Response> {
   const digestChannel = payload.channel?.id ?? "";
   const digestTs = payload.message?.ts;
 
+  /** Builds the "Assign to…" roster (ignore persons + group members). */
+  const buildRoster = async () => {
+    const groups = await listIgnoreGroups();
+    const groupEmails = (
+      await Promise.all(
+        groups.map(async (g) => {
+          try {
+            return await getGroupMemberEmails(g.kind, g.id);
+          } catch {
+            return [] as string[];
+          }
+        }),
+      )
+    ).flat();
+    return listAssigneeOptions([
+      ...new Set([...(await listIgnoreEmails()), ...groupEmails]),
+    ]);
+  };
+
   /** Removes a thread's entry from the digest message it was clicked in. */
   const removeFromDigest = async (messageTs: string) => {
     if (!digestTs || !digestChannel) return;
@@ -117,6 +136,9 @@ export async function POST(req: Request): Promise<Response> {
       const tracked = await listDigestMessages();
       const here = tracked.filter((r) => r.digest_ts === digestTs);
       const remaining = here.filter((r) => r.message_ts !== messageTs);
+      // Roster rebuilt on every press — without it the Assign select
+      // disappears from the rewritten digest until the next hourly scan.
+      const roster = await buildRoster();
       await updateUnansweredDigest(
         digestChannel,
         digestTs,
@@ -129,6 +151,7 @@ export async function POST(req: Request): Promise<Response> {
         })),
         // Best-effort total for the header line.
         tracked.length - here.length + remaining.length,
+        roster,
       );
       await deleteDigestMessagesForThreads([messageTs]);
     } catch (err) {
@@ -185,21 +208,7 @@ export async function POST(req: Request): Promise<Response> {
       // re-assign picker, roster minus the new assignee).
       try {
         const row = (await listDigestMessages()).find((r) => r.message_ts === messageTs);
-        const groups = await listIgnoreGroups();
-        const groupEmails = (
-          await Promise.all(
-            groups.map(async (g) => {
-              try {
-                return await getGroupMemberEmails(g.kind, g.id);
-              } catch {
-                return [] as string[];
-              }
-            }),
-          )
-        ).flat();
-        const roster = await listAssigneeOptions([
-          ...new Set([...(await listIgnoreEmails()), ...groupEmails]),
-        ]);
+        const roster = await buildRoster();
         await dmAssignment(
           assignee,
           {
