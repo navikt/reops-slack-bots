@@ -3,12 +3,13 @@
 Internal Slack automation for Team ResearchOps at Nav. One Slack app
 (**reops**) hosts multiple **behaviors** (jobs under `src/bots/<behavior>/`).
 Currently one behavior: **unanswered-reminder** — scans a channel for old
-messages without a `:solved:` reaction and posts a digest (with Suppress /
+messages without a `:solved:` reaction (or a reply from a member in a set)
+and posts a digest (with Suppress /
 Assign-to controls) to an internal channel.
 
 ## Requirements
 
-- pnpm + Node, Docker (local Postgres)
+- pnpm + Node, Docker (local Postgres, for local dev only)
 - A Slack app — create from `slack-app-manifest.json` at
   https://api.slack.com/apps?new_app=1 → **From a manifest**, install to
   workspace, copy bot token + signing secret. The manifest deliberately omits
@@ -16,7 +17,19 @@ Assign-to controls) to an internal channel.
 
 ## Setup
 
-`.env.local`:
+### Nais (deployed)
+
+Set the Slack secrets as **Nais secrets** — key-value pairs on the
+`reops-slack-bots` secret in the Nais console (app → **Secrets** tab):
+
+- `SLACK_BOT_TOKEN` — Bot User OAuth Token (`xoxb-…`)
+- `SLACK_SIGNING_SECRET` — app signing secret (verifies webhooks)
+
+The database needs no setup: Nais injects
+`NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_*` (URL + mounted sqeletor certs;
+the JDBC URL variant is not wired in — unusable by `pg`).
+
+### Local (`.env.local`)
 
 ```
 DATABASE_URL=postgres://postgres:dev@localhost:5432/slackbots
@@ -47,7 +60,7 @@ Without `DATABASE_URL` the server starts but migrations/jobs are skipped.
 
 ## Local testing limits
 
-- **Webhooks (digest buttons, DMs) don't work locally** — Slack must reach
+- **Webhooks (slack "action buttons", DMs) don't work locally** — Slack must reach
   `/api/slack/interactions`. In dev these were tested against the deployed
   app. To test live, tunnel and repoint the app's Interactivity URL:
   `cloudflared tunnel --url http://localhost:9092` (or ngrok) →
@@ -77,11 +90,6 @@ Admin gate: Azure AD via `@navikt/oasis` + live Team Catalog membership
 (fail-closed). Admins = `admin_groups` ∪ `admin_persons`, configured in the
 UI; when empty, first logged-in Nav user bootstraps it. The `frozen` setting
 is a kill switch for all outbound Slack calls.
-
-On Nais, `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET` live in the
-`reops-slack-bots` secret; DB comes from injected
-`NAIS_DATABASE_REOPS_SLACK_BOTS_SLACKBOTS_*` vars (the JDBC URL variant is
-not wired in — unusable by `pg`).
 
 ## Behavior: unanswered-reminder
 
