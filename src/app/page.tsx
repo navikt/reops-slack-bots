@@ -97,15 +97,16 @@ export default async function HomePage() {
           </BodyLong>
           <List>
             <ListItem>
-              a :solved: reaction marks it handled — on the original message or any
-              thread reply, set by team or asker, or
+              a handled reaction marks it — :solved:, :keanu-thanks:, :thanks:,
+              :thankyou:, :raised_hands:, :dart: or :white_check_mark: on the
+              original message or any thread reply, set by team or asker, or
             </ListItem>
             <ListItem>a team member wrote the last thread reply.</ListItem>
           </List>
           <BodyLong>
             Both are recency-based: a follow-up question from a non-team member
-            re-opens the thread, and it is marked handled again by re-adding :solved:
-            or replying.
+            re-opens the thread, and it is marked handled again by re-adding a
+            handled reaction or replying.
           </BodyLong>
           <BodyLong>
             Unanswered messages re-appear in the digest every {formatHours(reNagHours)}{" "}
@@ -117,7 +118,8 @@ export default async function HomePage() {
           </Heading>
           <List>
             <ListItem>
-              Answered? Reply in the thread, or add :solved: to the message — both
+              Answered? Reply in the thread, or add a handled reaction
+              (:solved:, :thanks:, :white_check_mark:, …) to the message — both
               mark it handled until someone asks a follow-up.
             </ListItem>
             <ListItem>

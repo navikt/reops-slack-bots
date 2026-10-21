@@ -180,6 +180,31 @@ export function buildPermalink(
     : base;
 }
 
+/**
+ * Reactions that mark a message/thread as handled. Any of these on the
+ * parent or a reply counts (recency-based; see isThreadHandled).
+ */
+export const SOLVED_EMOJIS = new Set([
+  "solved",
+  "keanu-thanks",
+  "thanks",
+  "thankyou",
+  "raised_hands",
+  "dart",
+  "white_check_mark",
+  "meow_teamwork",
+  "teamwork-makes-the-dream-work",
+  "meow_heart",
+  "heart",
+  "heartpulse",
+]);
+
+function hasSolvedReaction(
+  reactions: Array<{ name?: string }> | undefined,
+): boolean {
+  return (reactions ?? []).some((r) => r.name !== undefined && SOLVED_EMOJIS.has(r.name));
+}
+
 export interface UnsolvedMessage {
   ts: string;
   user: string;
@@ -210,15 +235,19 @@ export interface UnsolvedMessage {
  * restart); the grace filter is work-hours aware (see work-hours.ts), so a
  * message posted Friday evening is not nagged before Monday morning.
  *
- * :solved: is NOT filtered here — it is a recency-based handled signal, not
- * a veto. See isThreadHandled.
+ * Handled reactions are NOT filtered here — they are a recency-based
+ * handled signal, not a veto. See SOLVED_EMOJIS + isThreadHandled.
  *
  * Thread replies: conversations.history's embedded `latest_replies` does not
  * reliably carry author/reaction data (observed on the wire as ts-only
  * stubs), so threads with replies are hydrated via conversations.replies —
  * one call per thread, few per scan at hourly cadence. Bonus: we see ALL
- * replies, not just the 3 newest, so a :solved: deep in a long thread is no
- * longer missed.
+ * replies, not just the 3 newest, so a handled emoji (see SOLVED_EMOJIS)
+ * deep in a long thread is no longer missed.
+ *
+ * Grace applies to the thread's LATEST activity: after hydration, threads
+ * whose newest reply is still inside its grace period are dropped. An
+ * ongoing discussion keeps pushing its own deadline back until it settles.
  */
 export async function fetchOldUnsolvedMessages(
   channelId: string,
@@ -251,7 +280,8 @@ export async function fetchOldUnsolvedMessages(
       const botId = (msg as { bot_id?: string }).bot_id;
       if (botId === self.botId || msg.user === self.userId) continue;
 
-      // Still inside its (work-hours aware) grace period — too fresh to nag.
+      // Parent still inside its (work-hours aware) grace period — too fresh
+      // to nag, and no thread can out-age its parent, so skip hydration too.
       if (graceEligibleTs(msg.ts, graceHours, workHoursAware) > nowS) continue;
 
       const replyCount = msg.reply_count ?? 0;
@@ -267,7 +297,7 @@ export async function fetchOldUnsolvedMessages(
         replyCount,
         // Hydrated below for threaded messages.
         latestReplies: [],
-        parentSolved: (msg.reactions ?? []).some((r) => r.name === "solved"),
+        parentSolved: hasSolvedReaction(msg.reactions),
       });
     }
 
@@ -288,7 +318,7 @@ export async function fetchOldUnsolvedMessages(
       m.latestReplies = replies.map((r) => ({
         user: r.user ?? null,
         ts: Number.parseFloat(r.ts as string),
-        solved: (r.reactions ?? []).some((x) => x.name === "solved"),
+        solved: hasSolvedReaction(r.reactions),
       }));
       const newest = replies[replies.length - 1];
       if (newest?.ts) {
@@ -315,7 +345,32 @@ export async function fetchOldUnsolvedMessages(
     }
   }
 
-  return unsolved;
+  // Grace re-check on latest ACTIVITY, not just the parent: a thread whose
+  // newest reply is still inside its grace period is an active discussion —
+  // skip it this scan. Replies keep pushing the deadline back until the
+  // conversation settles (or resolves itself), then the parent grace
+  // eventually expires and the thread becomes nag-worthy.
+  const active = unsolved.filter((m) => {
+    const newestReplyTs = Math.max(0, ...m.latestReplies.map((r) => r.ts));
+    if (newestReplyTs === 0) return true; // no replies — parent grace already passed
+    const eligible = graceEligibleTs(
+      newestReplyTs.toFixed(6),
+      graceHours,
+      workHoursAware,
+    );
+    if (eligible > nowS) {
+      logDebug({
+        event: "slack.thread_in_grace",
+        ts: m.ts,
+        newest_reply_ts: newestReplyTs,
+        eligible_in_s: Math.round(eligible - nowS),
+      });
+      return false;
+    }
+    return true;
+  });
+
+  return active;
 }
 
 /**

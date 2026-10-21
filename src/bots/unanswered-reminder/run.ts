@@ -23,6 +23,7 @@ import {
 } from "../../lib/slack";
 import { getGroupMemberEmails } from "../../lib/auth";
 import { log, logDebug, logError } from "../../lib/log";
+import { isWithinWorkHours } from "../../lib/work-hours";
 
 const DEFAULT_SCAN_WINDOW_DAYS = 14;
 /** Messages younger than this get a grace period before the bot cares. */
@@ -32,6 +33,16 @@ const DEFAULT_RE_NAG_HOURS = 7 * 24;
 
 export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boolean }): Promise<void> {
   const ignoreReNagCooldown = opts?.ignoreReNagCooldown ?? false;
+
+  // Hard gate: never send on weekends or outside 09:00-16:30 Mon-Fri.
+  // graceEligibleTs only controls *when a message's grace clock starts* —
+  // without this check, a message that became eligible Friday afternoon
+  // would still be picked up by hourly scans all weekend (digest + DM).
+  if (!isWithinWorkHours(new Date())) {
+    log({ event: "bot.skipped", bot: "unanswered-reminder", reason: "outside_work_hours" });
+    return;
+  }
+
   const frozen = (await getSetting("frozen")) ?? "false";
   if (frozen === "true") {
     log({ event: "bot.skipped", bot: "unanswered-reminder", reason: "frozen" });

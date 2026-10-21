@@ -11,9 +11,10 @@
  *
  * Work hours: Mon–Fri, 09:00–16:30 local time (Norwegian workspace).
  *
- * Note: eligibility may land outside work hours (e.g. posted 16:00 with 1h
- * grace → due 17:00). The hourly scan delivers it then — per the requested
- * "notification outside work hours, 1 hour later" behavior.
+ * Note: `graceEligibleTs` may return a time outside work hours (e.g. posted
+ * 16:00 with 1h grace → due 17:00). Delivery is still gated separately:
+ * `runUnansweredReminder` skips the whole run when `isWithinWorkHours(now)`
+ * is false, so nothing is ever sent on evenings or weekends.
  */
 
 export const WORK_START_HOUR = 9;

@@ -56,11 +56,15 @@ void test("grace: posted within work hours → plain +N hours", () => {
   assert.equal(eligible.getTime(), local(2026, 10, 6, 11, 0).getTime());
 });
 
-void test("grace: posted late afternoon can land after close", () => {
-  // Requested behavior: outside-hours notifications are allowed.
-  const posted = local(2026, 10, 6, 16, 0); // Tue 16:00
+void test("grace: posted late afternoon lands after close, but run gate blocks send", () => {
+  // Eligibility may land outside work hours — runUnansweredReminder skips
+  // the entire run when isWithinWorkHours(now) is false, so this message
+  // would be delivered Monday 09:00 scan at the earliest (next work-hours
+  // window), never at 17:00 on Friday.
+  const posted = local(2026, 10, 9, 16, 0); // Fri 16:00
   const eligible = new Date(graceEligibleTs(ts(posted), 1) * 1000);
-  assert.equal(eligible.getTime(), local(2026, 10, 6, 17, 0).getTime()); // 17:00
+  assert.equal(eligible.getTime(), local(2026, 10, 9, 17, 0).getTime()); // Fri 17:00
+  assert.equal(isWithinWorkHours(eligible), false); // but send is gated
 });
 
 void test("grace: posted in the evening → next workday 09:00 + grace", () => {

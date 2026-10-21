@@ -1131,7 +1131,8 @@ export function AdminClient() {
                   <BodyShort textColor="subtle">
                     Messages from these people never trigger reminders. A thread
                     counts as handled when one of them wrote the last reply — or
-                    when the newest :solved: is more recent than the last
+                    when the newest handled reaction (:solved:, :thanks:,
+                    :white_check_mark:, …) is more recent than the last
                     follow-up.
                   </BodyShort>
                 </VStack>
