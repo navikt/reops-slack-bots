@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Stage 1: build — Chainguard Node via Nav pull-through (pinned major, no latest)
-FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:22-dev AS builder
+# Stage 1: build — Chainguard Node via Nav pull-through (major tag)
+FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:26-dev AS builder
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -12,7 +12,7 @@ USER root
 # standalone binary from GitHub releases via node. Keep packageManager in
 # package.json in sync with this version.
 COPY scripts/install-pnpm.mjs /tmp/install-pnpm.mjs
-RUN node /tmp/install-pnpm.mjs 12.11.1 /opt/pnpm /usr/local/bin/pnpm && \
+RUN node /tmp/install-pnpm.mjs 12.16.1 /opt/pnpm /usr/local/bin/pnpm && \
     rm /tmp/install-pnpm.mjs && \
     pnpm --version
 USER node
@@ -31,8 +31,8 @@ ENV GIT_SHA=${GIT_SHA}
 
 RUN pnpm run build
 
-# Stage 2: distroless runtime
-FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:22-slim AS runner
+# Stage 2: runtime
+FROM europe-north1-docker.pkg.dev/cgr-nav/pull-through/nav.no/node:26 AS runner
 WORKDIR /app
 
 ARG GIT_SHA=unknown
