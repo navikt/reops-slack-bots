@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { removeDigestItem, type MessageBlock } from "./digest-item-removal.ts";
+import { removeDigestItem, sourceFromLegacyReminder, type MessageBlock } from "./digest-item-removal.ts";
 
 function item(ts: string): MessageBlock[] {
   return [
@@ -47,4 +47,11 @@ void test("unknown target, duplicated target, or unexpected layout leaves messag
   assert.equal(removeDigestItem(malformed, "2000.000002"), null);
   assert.equal(removeDigestItem([...message("1000.000001"), { type: "section", text: { text: "unrecognized sibling" } }], "1000.000001"), null);
   assert.equal(removeDigestItem([], "1000.000001"), null);
+});
+
+void test("legacy source comes from the clicked thread's Slack link, not the DM destination", () => {
+  const blocks = message("1000.000001", "2000.000002");
+  blocks[6] = { type: "section", text: { type: "mrkdwn", text: "*Asker* · <https://nav.slack.com/archives/C123456/p2000000002?thread_ts=2000.000002&cid=C123456|åpne tråd>" } };
+  assert.equal(sourceFromLegacyReminder(blocks, "2000.000002"), "C123456");
+  assert.equal(sourceFromLegacyReminder(blocks, "1000.000001"), null);
 });

@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  foreignKey,
+  index,
   pgTable,
   primaryKey,
   serial,
@@ -99,9 +101,9 @@ export const threadActions = pgTable("thread_actions", {
 });
 
 /**
- * Which digest message carries which thread's link — powers reconciliation
- * (chat.update to drop handled links, chat.delete when empty). The digest
- * channel and the thread's source channel differ, so both are stored.
+ * Legacy channel-only delivery ledger. Kept for additive migration and schema
+ * compatibility; the new runtime uses reminder_threads/reminder_deliveries.
+ * Never add new writers here or use this table as current thread state.
  */
 export const digestMessages = pgTable(
   "digest_messages",
@@ -122,6 +124,41 @@ export const digestMessages = pgTable(
   },
   // One digest message carries up to 5 threads.
   (t) => [primaryKey({ columns: [t.digestTs, t.messageTs] })],
+);
+
+/** Shared preview cache; neither a delivery nor a handled-state override. */
+export const reminderThreads = pgTable(
+  "reminder_threads",
+  {
+    sourceChannelId: text("source_channel_id").notNull(),
+    threadTs: text("thread_ts").notNull(),
+    permalink: text("permalink").notNull(),
+    textExcerpt: text("text_excerpt").notNull(),
+    authorLabel: text("author_label").notNull(),
+    imageUrl: text("image_url"),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.sourceChannelId, t.threadTs] })],
+);
+
+/** Every rendered copy, regardless of channel digest vs assignment DM. */
+export const reminderDeliveries = pgTable(
+  "reminder_deliveries",
+  {
+    channelId: text("channel_id").notNull(),
+    deliveryTs: text("delivery_ts").notNull(),
+    sourceChannelId: text("source_channel_id").notNull(),
+    threadTs: text("thread_ts").notNull(),
+    kind: text("kind").notNull(),
+    recipientUserId: text("recipient_user_id"),
+    postedAt: timestamp("posted_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.channelId, t.deliveryTs, t.sourceChannelId, t.threadTs] }),
+    foreignKey({ columns: [t.sourceChannelId, t.threadTs], foreignColumns: [reminderThreads.sourceChannelId, reminderThreads.threadTs] }),
+    index("reminder_deliveries_thread_idx").on(t.sourceChannelId, t.threadTs),
+    check("reminder_deliveries_destination_check", sql`(${t.kind} = 'channel_digest' AND ${t.recipientUserId} IS NULL) OR (${t.kind} = 'assignment_dm' AND ${t.recipientUserId} IS NOT NULL)`),
+  ],
 );
 
 export type Setting = typeof settings.$inferSelect;

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { and, asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "./schema";
-import { adminGroups, adminPersons, digestMessages, ignoreGroups, ignorePersons, nagLog, settings, threadActions } from "./schema";
+import { adminGroups, adminPersons, digestMessages, ignoreGroups, ignorePersons, nagLog, reminderDeliveries, reminderThreads, settings, threadActions } from "./schema";
 
 let pool: Pool | null = null;
 let db: NodePgDatabase<typeof schema> | null = null;
@@ -317,6 +317,8 @@ export async function getTableCounts(): Promise<Array<{ table: string; rows: num
     ["nag_log", nagLog],
     ["thread_actions", threadActions],
     ["digest_messages", digestMessages],
+    ["reminder_threads", reminderThreads],
+    ["reminder_deliveries", reminderDeliveries],
   ] as const;
   const out: Array<{ table: string; rows: number }> = [];
   for (const [name, table] of tables) {
@@ -326,9 +328,9 @@ export async function getTableCounts(): Promise<Array<{ table: string; rows: num
   return out;
 }
 
-// ── Thread actions (Ignore button) ───────────────────────────────────────────
+// ── Thread actions (shared manual state, independent of presentation) ────────
 
-/** Mark a thread suppressed (or re-mark: refreshes actioned_at). */
+/** Store a suppression or assignment (re-mark refreshes actioned_at). */
 export async function upsertThreadAction(
   messageTs: string,
   channelId: string,
@@ -343,12 +345,6 @@ export async function upsertThreadAction(
       target: threadActions.messageTs,
       set: { action, actorUserId, assigneeUserId, actionedAt: new Date(), channelId },
     });
-}
-
-export async function deleteThreadAction(messageTs: string): Promise<void> {
-  await getDb()
-    .delete(threadActions)
-    .where(eq(threadActions.messageTs, messageTs));
 }
 
 /**
@@ -398,60 +394,4 @@ export async function getThreadActions(
       { actionedAt: r.actionedAt, action: r.action, assigneeUserId: r.assigneeUserId },
     ]),
   );
-}
-
-// ── Digest messages (reconciliation) ─────────────────────────────────────────
-
-export interface DigestMessageRow {
-  digest_ts: string;
-  channel_id: string;
-  message_ts: string;
-  source_channel_id: string;
-  permalink: string;
-  text_excerpt: string;
-  author_label: string;
-  image_url: string | null;
-}
-
-export async function recordDigestMessages(
-  rows: Array<{
-    digestTs: string;
-    channelId: string;
-    messageTs: string;
-    sourceChannelId: string;
-    permalink: string;
-    textExcerpt: string;
-    authorLabel: string;
-    imageUrl: string | null;
-  }>,
-): Promise<void> {
-  if (rows.length === 0) return;
-  await getDb()
-    .insert(digestMessages)
-    .values(rows)
-    .onConflictDoNothing({ target: [digestMessages.digestTs, digestMessages.messageTs] });
-}
-
-/** All tracked digest rows: which digest message links to which thread. */
-export async function listDigestMessages(): Promise<DigestMessageRow[]> {
-  const rows = await getDb().select().from(digestMessages);
-  return rows.map((r) => ({
-    digest_ts: r.digestTs,
-    channel_id: r.channelId,
-    message_ts: r.messageTs,
-    source_channel_id: r.sourceChannelId,
-    permalink: r.permalink,
-    text_excerpt: r.textExcerpt,
-    author_label: r.authorLabel,
-    image_url: r.imageUrl,
-  }));
-}
-
-export async function deleteDigestMessagesForThreads(
-  messageTss: string[],
-): Promise<void> {
-  if (messageTss.length === 0) return;
-  await getDb()
-    .delete(digestMessages)
-    .where(inArray(digestMessages.messageTs, messageTss));
 }

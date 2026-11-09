@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth";
 import { getSetting } from "../../../../lib/db";
-import { dmAssignment, postUnansweredDigest } from "../../../../lib/slack";
+import { postReminderMessages } from "../../../../lib/slack";
 import { runJob } from "../../../../lib/runner";
 import { log, logError } from "../../../../lib/log";
 
@@ -17,7 +17,7 @@ export const runtime = "nodejs";
  *                        target channel. Wiring check only — no nag_log write,
  *                        no scan.
  *  - action=dm:          sends the caller a fake "assigned" DM. Verifies the
- *                        im:write scope + conversations.open + dmAssignment
+ *                        im:write scope + conversations.open + shared reminder
  *                        rendering path without needing a real assignment.
  */
 export async function POST(req: Request): Promise<Response> {
@@ -58,7 +58,7 @@ export async function POST(req: Request): Promise<Response> {
       return NextResponse.json({ error: "No reminder channel configured" }, { status: 409 });
     }
     log({ event: "admin.test_ping", channel: target, by: auth.user.navIdent });
-    await postUnansweredDigest(target, [
+    await postReminderMessages({ kind: "channel_digest", channelId: target, recipientUserId: null }, [
       {
         ts: String(Date.now() / 1000),
         permalink: "https://github.com/navikt/reops-slack-bots",
@@ -66,7 +66,7 @@ export async function POST(req: Request): Promise<Response> {
         authorLabel: "reops-bots",
         imageUrl: null,
       },
-    ]);
+    ], []);
     return NextResponse.json({ ok: true });
   }
 
@@ -91,18 +91,18 @@ export async function POST(req: Request): Promise<Response> {
     }
     log({ event: "admin.test_dm", by: auth.user.navIdent, slack_user: slackUserId });
     try {
-      const dmChannel = await dmAssignment(
-        slackUserId,
-        {
+      const posted = await postReminderMessages(
+        { kind: "assignment_dm", recipientUserId: slackUserId },
+        [{
           ts: String(Date.now() / 1000),
           permalink: "https://github.com/navikt/reops-slack-bots",
           text: "Test assignment DM — wiring check from /admin. Not a real thread.",
           authorLabel: "reops-bots",
           imageUrl: null,
-        },
+        }],
         [], // no roster — "Assign to…" select renders with only "release"
-        "reops-bot",
       );
+      const dmChannel = posted[0]?.channelId;
       if (!dmChannel) {
         return NextResponse.json(
           { error: "conversations.open failed — is im:write scope granted?" },

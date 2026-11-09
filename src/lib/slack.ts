@@ -4,6 +4,7 @@ import { getSetting } from "./db";
 import { graceEligibleTs } from "./work-hours";
 import { DEFAULT_HANDLED_EMOJIS, hasHandledReaction } from "./handled-emojis";
 import { removeDigestItem, type MessageBlock } from "./digest-item-removal";
+import { MAX_REMINDER_ITEMS, type ReminderDelivery, type ReminderDestination, type ReminderItem } from "./reminders";
 
 export { isThreadHandled } from "./thread-handled";
 
@@ -451,16 +452,7 @@ export async function resolveUserLabels(
   return out;
 }
 
-export interface UnsolvedReminderItem {
-  ts: string;
-  permalink: string;
-  /** Excerpt of the previewed message (latest reply when threaded). */
-  text: string;
-  /** Display label for the previewed message's author. */
-  authorLabel: string;
-  /** Optional image thumb URL attached to the previewed message. */
-  imageUrl: string | null;
-}
+export type UnsolvedReminderItem = ReminderItem;
 
 /** One entry in the "Assign to…" roster — a team member who can own a
  * thread (the ignore set: persons + group members). Static select options
@@ -476,9 +468,6 @@ export const DIGEST_SUPPRESS_ACTION = "digest_suppress";
 export const DIGEST_ASSIGN_ACTION = "digest_assign";
 /** Sentinel select value: assignee releases the thread back to the channel. */
 export const DIGEST_RELEASE_VALUE = "release";
-
-/** Max items per digest message — Slack allows 50 blocks; we use 4/item. */
-const MAX_DIGEST_ITEMS = 12;
 
 function formatAge(ts: string, nowMs: number): string {
   const hours = Math.max(0, Math.round((nowMs - Number(ts) * 1000) / 3_600_000));
@@ -610,64 +599,6 @@ function buildDigestBlocks(
 }
 
 /**
- * Posts the unanswered-messages digest to the internal channel and returns
- * the posted message ts + items per message, so callers can track which
- * digest carries which thread (digest_messages table) for reconciliation.
- */
-export async function postUnansweredDigest(
-  channelId: string,
-  items: UnsolvedReminderItem[],
-  assignees: AssigneeOption[] = [],
-): Promise<Array<{ digestTs: string; items: UnsolvedReminderItem[] }>> {
-  if (items.length === 0) return [];
-
-  const nowMs = Date.now();
-  const chunks: UnsolvedReminderItem[][] = [];
-  for (let i = 0; i < items.length; i += MAX_DIGEST_ITEMS) {
-    chunks.push(items.slice(i, i + MAX_DIGEST_ITEMS));
-  }
-
-  const posted: Array<{ digestTs: string; items: UnsolvedReminderItem[] }> = [];
-
-  for (const [idx, chunk] of chunks.entries()) {
-    const { text, blocks } = buildDigestBlocks(
-      chunk,
-      items.length,
-      idx + 1,
-      chunks.length,
-      nowMs,
-      assignees,
-    );
-
-    const res = await slackCall("chat.postMessage", (web) =>
-      web.chat.postMessage({
-        channel: channelId,
-        text,
-        blocks,
-        unfurl_links: false,
-        unfurl_media: false,
-      }),
-    );
-
-    log({
-      event: "slack.digest_posted",
-      channel: channelId,
-      count: chunk.length,
-      total: items.length,
-      part: idx + 1,
-      parts: chunks.length,
-      ok: res.ok === true,
-    });
-
-    if (res.ok && res.ts) {
-      posted.push({ digestTs: res.ts, items: chunk });
-    }
-  }
-
-  return posted;
-}
-
-/**
  * Builds the "Assign to…" roster from raw emails: resolve to UIDs, attach
  * display labels, sort alphabetically. Shared by the scan (digest posting)
  * and the interactions webhook (DM renders).
@@ -682,70 +613,82 @@ export async function listAssigneeOptions(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/**
- * DMs an assignee about a thread they now own: opens (or reuses) the DM
- * channel via conversations.open, then posts the same preview blocks with
- * Suppress + Assign controls. Returns the DM channel id for nag_log
- * tracking, or null when the DM couldn't be opened (user deactivated etc).
- */
-export async function dmAssignment(
-  assigneeUserId: string,
-  item: UnsolvedReminderItem,
-  assignees: AssigneeOption[],
-  assignedBy: string,
-): Promise<string | null> {
-  const opened = await slackCall("conversations.open", (web) =>
-    web.conversations.open({ users: assigneeUserId }),
+/** One renderer for channel digests and assignment DMs. */
+function buildReminderBlocks(destination: ReminderDestination, items: UnsolvedReminderItem[], total: number, part: number, parts: number, roster: AssigneeOption[]) {
+  const assignment = destination.kind === "assignment_dm";
+  const rendered = buildDigestBlocks(items, total, part, parts, Date.now(),
+    assignment ? [{ userId: DIGEST_RELEASE_VALUE, label: "I don't know / release" }, ...roster] : roster,
+    assignment ? destination.recipientUserId : null,
   );
-  const dmChannel = opened.channel?.id;
-  if (!opened.ok || !dmChannel) {
-    logError({ event: "slack.dm_open_failed", assignee: assigneeUserId });
-    return null;
+  if (assignment) {
+    const by = destination.assignedBy && /^[UW][A-Z0-9]+$/.test(destination.assignedBy) ? ` av <@${destination.assignedBy}>` : "";
+    rendered.blocks[0] = { type: "section", text: { type: "mrkdwn", text: `*Tildelt til deg (${total})*${by} — svar i tråden, eller endre valget under:` } };
+    rendered.text = `Tildelt til deg (${total})\n${items.map((item) => `${item.authorLabel}: ${excerpt(item.text, 80)} — ${item.permalink}`).join("\n")}`;
   }
+  return rendered;
+}
 
-  const nowMs = Date.now();
-  // Assignee is pre-selected in the "Assign to…" select (obvious why this
-  // DM exists); "I don't know / release" is a first-class option that sends
-  // the thread back to the channel digest.
-  const dmAssignees: AssigneeOption[] = [
-    { userId: DIGEST_RELEASE_VALUE, label: "I don't know / release" },
-    ...assignees,
-  ];
-  const { blocks } = buildDigestBlocks(
-    [item],
-    1,
-    1,
-    1,
-    nowMs,
-    dmAssignees,
-    assigneeUserId,
-  );
-  // Replace the digest header with an assignment intro.
-  blocks[0] = {
-    type: "section",
-    text: {
-      type: "mrkdwn",
-      text: `*Tildelt til deg* av <@${assignedBy}> — svar i tråden, eller endre valget under:`,
-    },
+/** Posting does not decide thread state or write tracking; the manager does. */
+export async function postReminderMessages(
+  destination: ReminderDestination,
+  items: UnsolvedReminderItem[],
+  roster: AssigneeOption[],
+): Promise<Array<{ channelId: string; deliveryTs: string; items: UnsolvedReminderItem[] }>> {
+  if (!items.length) return [];
+  let channelId = destination.channelId;
+  if (destination.kind === "assignment_dm") {
+    if (!destination.recipientUserId) throw new Error("Assignment DM requires recipient");
+    const opened = await slackCall("conversations.open", (web) => web.conversations.open({ users: destination.recipientUserId! }));
+    channelId = opened.channel?.id;
+  }
+  if (!channelId) throw new Error("Reminder destination channel unavailable");
+  const chunks: UnsolvedReminderItem[][] = [];
+  for (let i = 0; i < items.length; i += MAX_REMINDER_ITEMS) chunks.push(items.slice(i, i + MAX_REMINDER_ITEMS));
+  const posted: Array<{ channelId: string; deliveryTs: string; items: UnsolvedReminderItem[] }> = [];
+  for (const [index, chunk] of chunks.entries()) {
+    const { text, blocks } = buildReminderBlocks(destination, chunk, items.length, index + 1, chunks.length, roster);
+    const res = await slackCall("chat.postMessage", (web) => web.chat.postMessage({ channel: channelId!, text, blocks, unfurl_links: false, unfurl_media: false }));
+    if (!res.ok || !res.ts) throw new Error("Slack reminder post failed");
+    posted.push({ channelId, deliveryTs: res.ts, items: chunk });
+    log({ event: "slack.reminder_posted", kind: destination.kind, channel: channelId, ts: res.ts, count: chunk.length });
+  }
+  return posted;
+}
+
+export async function updateReminderDelivery(delivery: ReminderDelivery, items: UnsolvedReminderItem[], roster: AssigneeOption[]): Promise<boolean> {
+  if (!items.length) {
+    await deleteReminderMessage(delivery.channelId, delivery.deliveryTs);
+    return false;
+  }
+  const destination: ReminderDestination = { kind: delivery.kind, channelId: delivery.channelId, recipientUserId: delivery.recipientUserId };
+  const { text, blocks } = buildReminderBlocks(destination, items, items.length, 1, 1, roster);
+  try {
+    await slackCall("chat.update", (web) => web.chat.update({ channel: delivery.channelId, ts: delivery.deliveryTs, text, blocks }));
+    return true;
+  } catch (err) {
+    if ((err as { data?: { error?: string } }).data?.error === "message_not_found") return false;
+    throw err;
+  }
+}
+
+/** Canonical Slack preview fallback for pre-migration/untracked reminders. */
+export async function fetchReminderThread(sourceChannelId: string, threadTs: string): Promise<UnsolvedReminderItem> {
+  let cursor: string | undefined;
+  let latest: { ts?: string; user?: string; text?: string } | undefined;
+  do {
+    const res = await slackCall("conversations.replies", (web) => web.conversations.replies({ channel: sourceChannelId, ts: threadTs, limit: 200, cursor }));
+    for (const message of res.messages ?? []) if (message.ts) latest = message;
+    cursor = res.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+  if (!latest?.ts) throw new Error("Original Slack thread not found");
+  const labels = await resolveUserLabels(latest.user ? [latest.user] : []);
+  return {
+    ts: threadTs,
+    permalink: buildPermalink(sourceChannelId, latest.ts, latest.ts === threadTs ? undefined : threadTs),
+    text: latest.text ?? "",
+    authorLabel: latest.user ? labels.get(latest.user) ?? latest.user : "?",
+    imageUrl: null,
   };
-  const text = `Tildelt til deg: ${item.authorLabel}: ${excerpt(item.text, 80)} — ${item.permalink}`;
-
-  const res = await slackCall("chat.postMessage", (web) =>
-    web.chat.postMessage({
-      channel: dmChannel,
-      text,
-      blocks,
-      unfurl_links: false,
-      unfurl_media: false,
-    }),
-  );
-  log({
-    event: "slack.assignment_dm_sent",
-    assignee: assigneeUserId,
-    thread_ts: item.ts,
-    ok: res.ok === true,
-  });
-  return dmChannel;
 }
 
 /**
@@ -761,7 +704,7 @@ export async function removeItemFromSlackMessage(
   const remaining = removeDigestItem(blocks, threadTs);
   if (!remaining) return false;
   if (remaining.remainingItems === 0) {
-    await deleteDigestMessage(channelId, messageTs);
+    await deleteReminderMessage(channelId, messageTs);
     return true;
   }
 
@@ -796,53 +739,16 @@ export async function removeItemFromSlackMessage(
   return true;
 }
 
-/** Deletes a previously posted digest message (replaced by a fresh one). */
-export async function deleteDigestMessage(
+/** Deletes a tracked reminder message, whether in a channel or a DM. */
+export async function deleteReminderMessage(
   channelId: string,
-  digestTs: string,
+  deliveryTs: string,
 ): Promise<void> {
-  await slackCall("chat.delete", (web) =>
-    web.chat.delete({ channel: channelId, ts: digestTs }),
-  );
-  log({ event: "slack.digest_deleted", channel: channelId, ts: digestTs });
-}
-
-/**
- * Reconciliation: rewrite a previously posted digest to only the still-open
- * items, or delete it when none remain. Called after each scan (and after
- * Suppress presses) so digests shrink as threads get handled.
- */
-export async function updateUnansweredDigest(
-  channelId: string,
-  digestTs: string,
-  remaining: UnsolvedReminderItem[],
-  total: number,
-  assignees: AssigneeOption[] = [],
-): Promise<void> {
-  if (remaining.length === 0) {
-    await slackCall("chat.delete", (web) =>
-      web.chat.delete({ channel: channelId, ts: digestTs }),
-    );
-    log({ event: "slack.digest_deleted", channel: channelId, ts: digestTs });
-    return;
+  try {
+    await slackCall("chat.delete", (web) => web.chat.delete({ channel: channelId, ts: deliveryTs }));
+  } catch (err) {
+    // Already deleted in Slack: safe to retire its tracking rows on retry.
+    if ((err as { data?: { error?: string } }).data?.error !== "message_not_found") throw err;
   }
-  const { text, blocks } = buildDigestBlocks(remaining, total, 1, 1, Date.now(), assignees);
-  await slackCall("chat.update", (web) =>
-    // unfurl_* is valid on chat.update per Web API docs; the SDK's
-    // ChatUpdateArguments type lags behind.
-    web.chat.update({
-      channel: channelId,
-      ts: digestTs,
-      text,
-      blocks,
-      unfurl_links: false,
-      unfurl_media: false,
-    } as Parameters<typeof web.chat.update>[0]),
-  );
-  log({
-    event: "slack.digest_updated",
-    channel: channelId,
-    ts: digestTs,
-    remaining: remaining.length,
-  });
+  log({ event: "slack.reminder_deleted", channel: channelId, ts: deliveryTs });
 }

@@ -5,6 +5,16 @@ export interface MessageBlock {
   [key: string]: unknown;
 }
 
+/** Legacy action blocks lack a source channel; their generated permalink has it. */
+export function sourceFromLegacyReminder(blocks: MessageBlock[], threadTs: string): string | null {
+  const index = blocks.findIndex((block) => block.type === "actions" && block.block_id === `digest_item_${threadTs}`);
+  const section = blocks[index - 2];
+  if (section?.type !== "section") return null;
+  const text = (section.text as { text?: string } | undefined)?.text;
+  if (typeof text !== "string") return null;
+  return text.match(/<https:\/\/[^/<>]+\.slack\.com\/archives\/([CG][A-Z0-9]+)\/p\d+(?:\?[^|>]*)?\|/)?.[1] ?? null;
+}
+
 /**
  * Remove one of our section/context/actions groups from the actual message.
  * Missing DB rows must never be interpreted as an empty Slack message.

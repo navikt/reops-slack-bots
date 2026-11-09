@@ -121,15 +121,57 @@ the default list. Defaults to
 handling, but team replies and Suppress still count. Changes apply on the next
 scan without a restart and replace the entire list.
 
-Digest buttons remove only their own entry using the actual Slack message
-blocks, not the bot's DB tracking rows. Other entries and assignment controls
-are preserved; the bot message is deleted only when its final entry is removed.
-Unknown message layouts are left unchanged rather than risking sibling loss.
+Channel digests and assignment DMs share the reminder module
+(`src/lib/reminders.ts`). Slack content/reactions plus `thread_actions`
+determine thread state; handling is evaluated before assignment routing.
+`reminder_threads` caches a shared preview, and `reminder_deliveries` records
+every rendered copy with its destination and recipient. Orphan previews outside
+the current open scan set are pruned; cached content is not permanent history.
 
-Digest: custom block previews (author · age · excerpt · «åpne tråd» link),
-`unfurl_links:false`, ≤12 items per message (Slack's 50-block cap, 4 blocks
-per item). ONE living digest per channel, tracked in `digest_messages`: new
-nags → delete + repost full open set; nothing new → reconcile in place
-(`chat.update`); button presses update instantly. Button/select payloads go
-to `/api/slack/interactions` (HMAC-SHA256 verified with
-`SLACK_SIGNING_SECRET`).
+Both destinations use the same block renderer: author · age · excerpt · thread
+link, `unfurl_links:false`, ≤12 items per message. Re-reminding posts a fresh
+batch for that destination and only then retires its old messages. Assignment
+DMs consolidate a person's open items rather than accumulating old reminders.
+Scans without new reminders update existing messages in place. Handling,
+reassigning, or releasing a thread updates all tracked copies without removing
+their siblings. Release clears its reminder cooldown so it can return to the
+channel on the next scan.
+
+Scans and button actions use a Postgres advisory lock to prevent concurrent
+rewrites. Button/select payloads go to `/api/slack/interactions` (HMAC-SHA256
+verified with `SLACK_SIGNING_SECRET`). Only legacy untracked messages use their
+actual Slack blocks for safe single-entry removal; unknown layouts are left
+unchanged. Synthetic admin wiring tests use the same renderer but aren't real
+threads and are deliberately not tracked.
+
+### Production migration: unified reminders
+
+`drizzle/0003_unified_reminders.sql` adds the two reminder tables and copies
+existing channel-digest rows into them. Where a thread has multiple previews,
+the newest becomes its shared snapshot. Existing settings, suppressions,
+assignments, cooldowns, and legacy tables are preserved. No database reset.
+
+Old assignment DMs have no stored Slack message pointers and cannot be
+backfilled from the database. They remain historical; buttons still work through
+the legacy adapter. Active assignments get a tracked replacement on a later
+scan, even inside the old cooldown. An occasional duplicate during this cutover
+is expected; untracked Slack history is never bulk-deleted.
+
+Before production rollout:
+
+1. Run `pnpm test:db` against a **dedicated local test Postgres on a non-5432
+   port**, using `REMINDER_TEST_DATABASE_URL`. The test creates/drops only its
+   generated `reminder_test_*` databases; it never defaults to `DATABASE_URL`.
+   It verifies fresh and populated migrations, unchanged legacy rows, and the
+   real DB adapter. Ordinary `pnpm test` skips this test without that variable.
+2. Pause the bot in Admin, allow any active run to finish, and wait for the
+   10-second Slack kill-switch cache to expire.
+3. Deploy the new app; boot applies the additive migration. Ensure every old
+   worker has stopped before unpausing. Old workers don't maintain new tracking.
+4. Verify migration readiness, saved emoji settings, and existing manual actions;
+   then unpause and check one channel digest and assignment DM.
+
+Database schema remains compatible with the previous app, but delivery
+bookkeeping changes after cutover. Rolling back app code alone doesn't reconcile
+new DMs or restore the legacy tracking table to current state; pause and review
+delivery cleanup first. Don't deploy an unverified migration.
