@@ -3,7 +3,7 @@
 Internal Slack automation for Team ResearchOps at Nav. One Slack app
 (**reops**) hosts multiple **behaviors** (jobs under `src/bots/<behavior>/`).
 Currently one behavior: **unanswered-reminder** — scans a channel for old
-messages without a `:solved:` reaction (or a reply from a member in a set)
+messages without a configured handled reaction (or a reply from a member in a set)
 and posts a digest (with Suppress /
 Assign-to controls) to an internal channel.
 
@@ -104,11 +104,27 @@ A message counts as unanswered only if ALL hold:
   grace for off-hours posts starts at next workday 09:00 (work hours
   Mon–Fri 09:00–16:30; Friday-evening post → due Monday 10:00)
 - author not on the ignore list (manual emails + Team Catalog group members)
-- not handled: team last-reply, a newer Suppress mark, or `:solved:` (parent
+- not handled: team last-reply, a newer Suppress mark, or a configured handled reaction (parent
   or reply, anyone) — recency decides, so a non-team follow-up re-opens the
   thread (`src/lib/thread-handled.ts`). **Assign to…** routes the thread to a
   member's DM; newer thread activity re-opens it to the channel
 - not nagged within `re_nag_hours` (default 7d; `nag_log`)
+
+Handled reactions are configured in **Admin → Handled emojis** and stored in
+`unanswered_reminder.handled_emojis`. Add Slack names with or without colons in
+the combobox, or paste a comma- or whitespace-separated list. Each name becomes
+a removable chip. Adding, removing, or pasting emojis saves automatically,
+including when you remove the final chip. **Reset to default** restores and saves
+the default list. Defaults to
+`raised_hands`, `solved`, `dart`, `heart`, `heartpulse`, `meow_heart`, and
+`white_check_mark` only when no list has been saved. An empty saved list disables reaction
+handling, but team replies and Suppress still count. Changes apply on the next
+scan without a restart and replace the entire list.
+
+Digest buttons remove only their own entry using the actual Slack message
+blocks, not the bot's DB tracking rows. Other entries and assignment controls
+are preserved; the bot message is deleted only when its final entry is removed.
+Unknown message layouts are left unchanged rather than risking sibling loss.
 
 Digest: custom block previews (author · age · excerpt · «åpne tråd» link),
 `unfurl_links:false`, ≤12 items per message (Slack's 50-block cap, 4 blocks

@@ -2,6 +2,8 @@ import { WebClient } from "@slack/web-api";
 import { log, logDebug, logError } from "./log";
 import { getSetting } from "./db";
 import { graceEligibleTs } from "./work-hours";
+import { DEFAULT_HANDLED_EMOJIS, hasHandledReaction } from "./handled-emojis";
+import { removeDigestItem, type MessageBlock } from "./digest-item-removal";
 
 export { isThreadHandled } from "./thread-handled";
 
@@ -180,31 +182,6 @@ export function buildPermalink(
     : base;
 }
 
-/**
- * Reactions that mark a message/thread as handled. Any of these on the
- * parent or a reply counts (recency-based; see isThreadHandled).
- */
-export const SOLVED_EMOJIS = new Set([
-  "solved",
-  "keanu-thanks",
-  "thanks",
-  "thankyou",
-  "raised_hands",
-  "dart",
-  "white_check_mark",
-  "meow_teamwork",
-  "teamwork-makes-the-dream-work",
-  "meow_heart",
-  "heart",
-  "heartpulse",
-]);
-
-function hasSolvedReaction(
-  reactions: Array<{ name?: string }> | undefined,
-): boolean {
-  return (reactions ?? []).some((r) => r.name !== undefined && SOLVED_EMOJIS.has(r.name));
-}
-
 export interface UnsolvedMessage {
   ts: string;
   user: string;
@@ -224,7 +201,7 @@ export interface UnsolvedMessage {
     ts: number;
     solved: boolean;
   }>;
-  /** Parent message carries :solved:. */
+  /** Parent message carries a configured handled reaction. */
   parentSolved: boolean;
 }
 
@@ -236,13 +213,13 @@ export interface UnsolvedMessage {
  * message posted Friday evening is not nagged before Monday morning.
  *
  * Handled reactions are NOT filtered here — they are a recency-based
- * handled signal, not a veto. See SOLVED_EMOJIS + isThreadHandled.
+ * handled signal, not a veto. See isThreadHandled.
  *
  * Thread replies: conversations.history's embedded `latest_replies` does not
  * reliably carry author/reaction data (observed on the wire as ts-only
  * stubs), so threads with replies are hydrated via conversations.replies —
  * one call per thread, few per scan at hourly cadence. Bonus: we see ALL
- * replies, not just the 3 newest, so a handled emoji (see SOLVED_EMOJIS)
+ * replies, not just the 3 newest, so a configured handled emoji
  * deep in a long thread is no longer missed.
  *
  * Grace applies to the thread's LATEST activity: after hydration, threads
@@ -254,6 +231,7 @@ export async function fetchOldUnsolvedMessages(
   olderThanDays: number,
   graceHours: number,
   workHoursAware = true,
+  handledEmojis: ReadonlySet<string> = new Set(DEFAULT_HANDLED_EMOJIS),
 ): Promise<UnsolvedMessage[]> {
   const self = await getSelfIdentity();
   const nowS = Date.now() / 1000;
@@ -297,7 +275,7 @@ export async function fetchOldUnsolvedMessages(
         replyCount,
         // Hydrated below for threaded messages.
         latestReplies: [],
-        parentSolved: hasSolvedReaction(msg.reactions),
+        parentSolved: hasHandledReaction(msg.reactions, handledEmojis),
       });
     }
 
@@ -318,7 +296,7 @@ export async function fetchOldUnsolvedMessages(
       m.latestReplies = replies.map((r) => ({
         user: r.user ?? null,
         ts: Number.parseFloat(r.ts as string),
-        solved: hasSolvedReaction(r.reactions),
+        solved: hasHandledReaction(r.reactions, handledEmojis),
       }));
       const newest = replies[replies.length - 1];
       if (newest?.ts) {
@@ -770,7 +748,56 @@ export async function dmAssignment(
   return dmChannel;
 }
 
-/** Deletes a previously posted digest message (replaced by a fresh one). */export async function deleteDigestMessage(
+/**
+ * Remove the clicked item using Slack's actual blocks, not DB tracking rows.
+ * Preserves assignment headers, sibling previews and existing controls.
+ */
+export async function removeItemFromSlackMessage(
+  channelId: string,
+  messageTs: string,
+  threadTs: string,
+  blocks: MessageBlock[],
+): Promise<boolean> {
+  const remaining = removeDigestItem(blocks, threadTs);
+  if (!remaining) return false;
+  if (remaining.remainingItems === 0) {
+    await deleteDigestMessage(channelId, messageTs);
+    return true;
+  }
+
+  // Update the channel digest count, but leave assignment intro text intact.
+  const header = remaining.blocks[0];
+  const headerText = header.text as { type?: string; text?: string } | undefined;
+  if (headerText?.text?.startsWith("*Ubesvarte meldinger (")) {
+    remaining.blocks[0] = {
+      ...header,
+      text: { ...headerText, text: `*Ubesvarte meldinger (${remaining.remainingItems})*` },
+    };
+  }
+  const text = remaining.blocks.flatMap((block) => {
+    if (block.type === "section") {
+      const content = block.text as { text?: string } | undefined;
+      return content?.text ? [content.text] : [];
+    }
+    if (block.type === "context" && Array.isArray(block.elements)) {
+      return block.elements.flatMap((element: { text?: string }) => element.text ? [element.text] : []);
+    }
+    return [];
+  }).join("\n");
+  await slackCall("chat.update", (web) =>
+    web.chat.update({
+      channel: channelId,
+      ts: messageTs,
+      text,
+      blocks: remaining.blocks,
+    } as Parameters<typeof web.chat.update>[0]),
+  );
+  log({ event: "slack.digest_item_removed", channel: channelId, ts: messageTs, thread_ts: threadTs, remaining: remaining.remainingItems });
+  return true;
+}
+
+/** Deletes a previously posted digest message (replaced by a fresh one). */
+export async function deleteDigestMessage(
   channelId: string,
   digestTs: string,
 ): Promise<void> {

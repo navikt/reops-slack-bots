@@ -15,8 +15,9 @@ import {
   DIGEST_SUPPRESS_ACTION,
   dmAssignment,
   listAssigneeOptions,
-  updateUnansweredDigest,
+  removeItemFromSlackMessage,
 } from "../../../../lib/slack";
+import { type MessageBlock } from "../../../../lib/digest-item-removal";
 import { log, logError } from "../../../../lib/log";
 
 export const runtime = "nodejs";
@@ -89,7 +90,7 @@ export async function POST(req: Request): Promise<Response> {
       selected_option?: { value?: string }; // static_select / overflow
     }>;
     channel?: { id?: string };
-    message?: { ts?: string };
+    message?: { ts?: string; blocks?: MessageBlock[] };
     user?: { id?: string };
   };
   try {
@@ -133,26 +134,16 @@ export async function POST(req: Request): Promise<Response> {
   const removeFromDigest = async (messageTs: string) => {
     if (!digestTs || !digestChannel) return;
     try {
-      const tracked = await listDigestMessages();
-      const here = tracked.filter((r) => r.digest_ts === digestTs);
-      const remaining = here.filter((r) => r.message_ts !== messageTs);
-      // Roster rebuilt on every press — without it the Assign select
-      // disappears from the rewritten digest until the next hourly scan.
-      const roster = await buildRoster();
-      await updateUnansweredDigest(
+      const updated = await removeItemFromSlackMessage(
         digestChannel,
         digestTs,
-        remaining.map((r) => ({
-          ts: r.message_ts,
-          permalink: r.permalink,
-          text: r.text_excerpt,
-          authorLabel: r.author_label,
-          imageUrl: r.image_url,
-        })),
-        // Best-effort total for the header line.
-        tracked.length - here.length + remaining.length,
-        roster,
+        messageTs,
+        payload.message?.blocks ?? [],
       );
+      if (!updated) {
+        logError({ event: "slack.digest_item_removal_skipped", channel: digestChannel, digest_ts: digestTs, message_ts: messageTs, reason: "unknown_message_layout" });
+        return;
+      }
       await deleteDigestMessagesForThreads([messageTs]);
     } catch (err) {
       logError({

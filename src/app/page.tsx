@@ -6,6 +6,7 @@ import { ListItem } from "@navikt/ds-react/List";
 import { getSetting } from "../lib/db";
 import { listJoinedChannels } from "../lib/slack";
 import { requireAdmin } from "../lib/auth";
+import { DEFAULT_HANDLED_EMOJIS, getHandledEmojis, HANDLED_EMOJIS_SETTING } from "../lib/handled-emojis";
 
 export const dynamic = "force-dynamic";
 
@@ -38,14 +39,16 @@ export default async function HomePage() {
   let graceHours = 1;
   let reNagHours = 168;
   let frozen = false;
+  let handledEmojis: string[] = [...DEFAULT_HANDLED_EMOJIS];
   try {
-    const [s, t, sw, gh, rh, frozenRaw] = await Promise.all([
+    const [s, t, sw, gh, rh, frozenRaw, handledEmojisRaw] = await Promise.all([
       getSetting("unanswered_reminder.source_channel_id"),
       getSetting("unanswered_reminder.target_channel_id"),
       getSetting("scan_window_days"),
       getSetting("min_age_hours"),
       getSetting("re_nag_hours"),
       getSetting("frozen"),
+      getSetting(HANDLED_EMOJIS_SETTING),
     ]);
     sourceChannelId = s;
     targetChannelId = t;
@@ -53,6 +56,7 @@ export default async function HomePage() {
     graceHours = Number.parseInt(gh ?? "1", 10) || 0;
     reNagHours = Number.parseFloat(rh ?? "168") || 168;
     frozen = frozenRaw === "true";
+    handledEmojis = getHandledEmojis(handledEmojisRaw);
     if (!frozen) {
       channels = await listJoinedChannels();
     }
@@ -96,17 +100,18 @@ export default async function HomePage() {
             as answered when:
           </BodyLong>
           <List>
-            <ListItem>
-              a handled reaction marks it — :solved:, :keanu-thanks:, :thanks:,
-              :thankyou:, :raised_hands:, :dart: or :white_check_mark: on the
-              original message or any thread reply, set by team or asker, or
-            </ListItem>
+            {handledEmojis.length > 0 && (
+              <ListItem>
+                a configured handled reaction marks it — {handledEmojis.map((name) => `:${name}:`).join(", ")} on the
+                original message or any thread reply, set by team or asker, or
+              </ListItem>
+            )}
             <ListItem>a team member wrote the last thread reply.</ListItem>
           </List>
           <BodyLong>
-            Both are recency-based: a follow-up question from a non-team member
-            re-opens the thread, and it is marked handled again by re-adding a
-            handled reaction or replying.
+            Handling is recency-based: a follow-up question from a non-team member
+            re-opens the thread. A later team reply or configured handled reaction
+            marks it handled again.
           </BodyLong>
           <BodyLong>
             Unanswered messages re-appear in the digest every {formatHours(reNagHours)}{" "}
@@ -118,9 +123,8 @@ export default async function HomePage() {
           </Heading>
           <List>
             <ListItem>
-              Answered? Reply in the thread, or add a handled reaction
-              (:solved:, :thanks:, :white_check_mark:, …) to the message — both
-              mark it handled until someone asks a follow-up.
+              Answered? Reply in the thread{handledEmojis.length > 0 ? ", or add one of the configured handled reactions to the message" : ""}.
+              A team reply{handledEmojis.length > 0 ? " or handled reaction marks" : " marks"} it handled until someone asks a follow-up.
             </ListItem>
             <ListItem>
               Add the bot to a channel: <code>/invite @reops</code>.

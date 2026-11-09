@@ -9,8 +9,7 @@
  * - The newest handled reaction (parent or reply, by message ts) wins if no
  *   non-team reply is newer than it. Anyone — team or the asker — can set
  *   it; a follow-up non-team question re-opens the thread, and re-adding a
- *   handled reaction closes it again. Recognized emoji: see SOLVED_EMOJIS in
- *   slack.ts.
+ *   handled reaction closes it again. Recognized emoji are configured in admin.
  *
  * Inputs are the thread's full reply list (hydrated via
  * conversations.replies — history's embedded latest_replies proved

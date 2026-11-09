@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   BodyShort,
@@ -22,6 +22,7 @@ import {
 } from "@navikt/ds-react";
 import { TrashIcon } from "@navikt/aksel-icons";
 import { UNSAFE_Combobox as Combobox } from "@navikt/ds-react";
+import { DEFAULT_HANDLED_EMOJIS, handledEmojiOptions, parseHandledEmojis } from "../../lib/handled-emojis";
 import "./admin.css";
 
 interface IgnorePersonEntry {
@@ -114,6 +115,7 @@ interface AdminState {
   minAgeHours: number;
   reNagHours: number;
   workHoursAware: boolean;
+  handledEmojis: string;
   ignorePersons: IgnorePersonEntry[];
   sourceChannelId: string | null;
   targetChannelId: string | null;
@@ -525,6 +527,123 @@ function PersonManager<T extends { label: string | null }>({
   );
 }
 
+function HandledEmojiEditor({
+  savedValue,
+  busy,
+  onSave,
+}: {
+  savedValue: string;
+  busy: boolean;
+  onSave: (value: string) => Promise<boolean>;
+}) {
+  const [selected, setSelected] = useState(() => parseHandledEmojis(savedValue));
+  const [comboboxReset, setComboboxReset] = useState(0);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const saving = useRef(false);
+
+  useEffect(() => {
+    setSelected(parseHandledEmojis(savedValue));
+  }, [savedValue]);
+
+  const options = handledEmojiOptions(selected);
+  const search = input.trim().replace(/^:|:$/g, "").toLowerCase();
+
+  const persist = async (next: string[]) => {
+    if (busy || saving.current) return;
+    const previous = selected;
+    saving.current = true;
+    setSelected(next);
+    setInput("");
+    setError(null);
+    try {
+      if (!(await onSave(next.join(", ")))) {
+        setSelected(previous);
+        setError("Could not save emojis. Your previous selection has been restored.");
+      }
+    } finally {
+      saving.current = false;
+    }
+  };
+
+  const addNames = (value: string) => {
+    if (busy || saving.current) return;
+    try {
+      const next = parseHandledEmojis([...selected, value].join(", "));
+      void persist(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid emoji name");
+    }
+  };
+
+  return (
+    <form
+      style={{ width: "100%" }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (error && !input.trim()) return;
+        if (input.trim()) addNames(input);
+      }}
+    >
+      <VStack gap="space-12" align="start">
+        <Combobox
+          key={comboboxReset}
+          label="Handled emojis"
+          description="Type a Slack emoji name, such as :white_check_mark:, then press Enter to add it. You can also paste a list. Remove individual emojis with ×. Changes save automatically and apply on the next scan. No emojis selected means only team replies and Suppress count."
+          options={options}
+          selectedOptions={options}
+          // Override Aksel's raw custom-option cache so dropdown labels match chips.
+          filteredOptions={options.filter((option) => option.value.toLowerCase().includes(search))}
+          isMultiSelect
+          allowNewValues
+          readOnly={busy}
+          value={input}
+          onChange={(value) => {
+            setInput(value);
+          }}
+          onToggleSelected={(option, isSelected) => {
+            if (busy || saving.current) return;
+            if (isSelected) {
+              addNames(option);
+            } else {
+              void persist(selected.filter((name) => name !== option));
+            }
+          }}
+          onPaste={(e) => {
+            e.preventDefault();
+            addNames(e.clipboardData.getData("text"));
+          }}
+          error={error}
+          style={{ width: "100%" }}
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          size="small"
+          disabled={busy}
+          onClick={() => {
+            if (busy || saving.current) return;
+            // Also discard Aksel's internal custom entries, allowing re-adds.
+            setComboboxReset((value) => value + 1);
+            void persist([...DEFAULT_HANDLED_EMOJIS]);
+          }}
+        >
+          Reset to default
+        </Button>
+        <div role="status">
+          {busy ? (
+            <BodyShort size="small" textColor="subtle">Saving emojis…</BodyShort>
+          ) : selected.length === 0 && !error ? (
+            <BodyShort size="small" textColor="subtle">
+              No handled emojis selected. Reaction-based handling is disabled.
+            </BodyShort>
+          ) : null}
+        </div>
+      </VStack>
+    </form>
+  );
+}
+
 export function AdminClient() {
   const [state, setState] = useState<AdminState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -594,6 +713,7 @@ export function AdminClient() {
     minAgeHours?: number;
     reNagHours?: number;
     workHoursAware?: boolean;
+    handledEmojis?: string;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   }) => {
@@ -610,9 +730,13 @@ export function AdminClient() {
           error?: string;
         } | null;
         setActionError(data?.error ?? `Save failed (${res.status})`);
-        return;
+        return false;
       }
       await load();
+      return true;
+    } catch {
+      setActionError("Could not save settings. Check your connection and try again.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -942,7 +1066,7 @@ export function AdminClient() {
                 Unanswered messages
               </Heading>
               <BodyShort>
-                Hourly scan for messages without :solved:. Posts one digest with
+                Hourly scan for unhandled messages. Posts one digest with
                 a link per message — Slack expands the links into previews.
               </BodyShort>
             </VStack>
@@ -1122,6 +1246,12 @@ export function AdminClient() {
               </section>
             </Box>
 
+            <HandledEmojiEditor
+              savedValue={state.handledEmojis}
+              busy={busy}
+              onSave={(handledEmojis) => saveSettings({ handledEmojis })}
+            />
+
             <section style={{ width: "100%" }}>
               <VStack gap="space-16" align="start" style={{ width: "100%" }}>
                 <VStack gap="space-4" align="start">
@@ -1131,8 +1261,7 @@ export function AdminClient() {
                   <BodyShort textColor="subtle">
                     Messages from these people never trigger reminders. A thread
                     counts as handled when one of them wrote the last reply — or
-                    when the newest handled reaction (:solved:, :thanks:,
-                    :white_check_mark:, …) is more recent than the last
+                    when the newest configured handled reaction is more recent than the last
                     follow-up.
                   </BodyShort>
                 </VStack>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth";
 import { setSetting } from "../../../../lib/db";
 import { log } from "../../../../lib/log";
+import { HANDLED_EMOJIS_SETTING, parseHandledEmojis } from "../../../../lib/handled-emojis";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,7 @@ export async function POST(req: Request): Promise<Response> {
     minAgeHours?: number;
     reNagHours?: number;
     workHoursAware?: boolean;
+    handledEmojis?: string;
     sourceChannelId?: string | null;
     targetChannelId?: string | null;
   };
@@ -25,6 +27,21 @@ export async function POST(req: Request): Promise<Response> {
     body = (await req.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: "Malformed JSON" }, { status: 400 });
+  }
+
+  let handledEmojis: string | undefined;
+  if (body.handledEmojis !== undefined) {
+    try {
+      if (typeof body.handledEmojis !== "string") throw new Error("handledEmojis must be a string.");
+      handledEmojis = parseHandledEmojis(body.handledEmojis).join(", ");
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : "Invalid emoji list" }, { status: 400 });
+    }
+  }
+
+  if (handledEmojis !== undefined) {
+    await setSetting(HANDLED_EMOJIS_SETTING, handledEmojis);
+    log({ event: "admin.settings_changed", key: HANDLED_EMOJIS_SETTING, value: handledEmojis, by: auth.user.navIdent });
   }
 
   if (typeof body.frozen === "boolean") {

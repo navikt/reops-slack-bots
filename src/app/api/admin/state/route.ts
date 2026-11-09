@@ -14,6 +14,7 @@ import {
 } from "../../../../lib/db";
 import { listJoinedChannels, resolveEmailsToUserIds } from "../../../../lib/slack";
 import { logError } from "../../../../lib/log";
+import { getHandledEmojis, HANDLED_EMOJIS_SETTING } from "../../../../lib/handled-emojis";
 
 export const runtime = "nodejs";
 
@@ -150,6 +151,7 @@ export async function GET(req: Request): Promise<Response> {
     minAgeHours: Number.parseInt(minAgeHours ?? "1", 10),
     reNagHours: reNagHoursNum,
     workHoursAware: (workHoursAware ?? "true") !== "false",
+    handledEmojis: getHandledEmojis(await getSetting(HANDLED_EMOJIS_SETTING)).join(", "),
     ignorePersons: ignorePersons.map((r) => ({
       id: r.id,
       kind: r.kind,

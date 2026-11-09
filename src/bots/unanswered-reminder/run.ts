@@ -24,6 +24,7 @@ import {
 import { getGroupMemberEmails } from "../../lib/auth";
 import { log, logDebug, logError } from "../../lib/log";
 import { isWithinWorkHours } from "../../lib/work-hours";
+import { getHandledEmojis, HANDLED_EMOJIS_SETTING } from "../../lib/handled-emojis";
 
 const DEFAULT_SCAN_WINDOW_DAYS = 14;
 /** Messages younger than this get a grace period before the bot cares. */
@@ -77,6 +78,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
   // up to a full day regardless of min_age_hours.
   const workHoursAwareRaw = (await getSetting("work_hours_aware")) ?? "true";
   const workHoursAware = workHoursAwareRaw !== "false";
+  const handledEmojis = new Set(getHandledEmojis(await getSetting(HANDLED_EMOJIS_SETTING)));
 
   const sourceChannel =
     (await getSetting("unanswered_reminder.source_channel_id")) ??
@@ -124,6 +126,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
     scanWindowDays,
     minAgeHours,
     workHoursAware,
+    handledEmojis,
   );
 
   const candidates = unsolved.filter((m) => !ignoreSet.has(m.user));
@@ -143,7 +146,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
   }
 
   // Handled rule (see isThreadHandled): team reply last, manual Suppress,
-  // or :solved: recency — re-openable conversations. Marks live in
+  // or configured reaction recency — re-openable conversations. Marks live in
   // thread_actions (digest buttons), compared against last reply ts.
   // Assigned threads leave the channel digest entirely; their re-nags go to
   // the assignee's DM instead (see below).
@@ -186,7 +189,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
         verdict: "skip",
         why: mark
           ? "handled (suppressed via digest button)"
-          : "handled (team reply last, or :solved: newer than last non-team activity)",
+          : "handled (team reply last, or configured reaction newer than last non-team activity)",
         last_reply_user: lastReplyUser,
       });
       continue;
@@ -199,7 +202,7 @@ export async function runUnansweredReminder(opts?: { ignoreReNagCooldown?: boole
         m.replyCount === 0
           ? "no thread replies"
           : lastReplyUser
-            ? "last activity by non-team user, no newer :solved:"
+            ? "last activity by non-team user, no newer configured handled reaction"
             : "last reply author unknown",
       last_reply_user: lastReplyUser,
     });
