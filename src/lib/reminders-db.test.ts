@@ -124,6 +124,15 @@ void test("unified reminder migration and DB adapter preserve legacy state", { s
       assert.equal((await legacy.query("SELECT action FROM thread_actions WHERE message_ts=$1", [dm.threadTs])).rows[0].action, "suppressed");
       assert.equal(existing.length, 3);
 
+      await reminderStore.unsuppress(dm.threadTs);
+      assert.equal((await legacy.query("SELECT count(*)::int AS n FROM thread_actions WHERE message_ts=$1", [dm.threadTs])).rows[0].n, 0);
+      assert.equal((await legacy.query("SELECT count(*)::int AS n FROM nag_log WHERE message_ts=$1", [dm.threadTs])).rows[0].n, 0);
+      await reminderStore.saveAction(dm.threadTs, "C_SOURCE", "assigned", "U_NEW", "U_NEW");
+      await reminderStore.recordNag(dm.threadTs, "D_NEW");
+      await reminderStore.unsuppress(dm.threadTs);
+      assert.equal((await legacy.query("SELECT action FROM thread_actions WHERE message_ts=$1", [dm.threadTs])).rows[0].action, "assigned");
+      assert.equal((await legacy.query("SELECT count(*)::int AS n FROM nag_log WHERE message_ts=$1", [dm.threadTs])).rows[0].n, 1);
+
       // Lock contention is rejected without consuming every pool connection.
       let unlock!: () => void;
       const barrier = new Promise<void>((resolve) => { unlock = resolve; });

@@ -71,3 +71,35 @@
 .fieldRow > * {
   min-width: 0;
 }
+
+.diagnosticDetails {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--ax-space-16);
+  margin: 0;
+}
+
+.diagnosticRawValue {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.diagnosticsPage {
+  padding-block: 2rem;
+}
+
+.diagnosticsPage,
+.diagnosticsContent {
+  width: 100%;
+  min-width: 0;
+}
+
+.diagnosticsGridViewport {
+  width: 100%;
+  min-width: 0;
+}
+
+.diagnosticPanel {
+  position: sticky;
+  left: 0;
+}

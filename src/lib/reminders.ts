@@ -24,6 +24,10 @@ export interface ReminderAction {
   actionedAt: Date;
 }
 
+export class ReminderConflictError extends Error {
+  constructor(message: string) { super(message); this.name = "ReminderConflictError"; }
+}
+
 export type ReminderRoute =
   | { kind: "handled" }
   | { kind: "channel_digest" }
@@ -77,6 +81,7 @@ export interface ReminderStore {
   getActions(threadTss: string[]): Promise<Map<string, ReminderAction>>;
   saveAction(threadTs: string, channelId: string, action: "suppressed" | "assigned", actor: string, assignee?: string): Promise<void>;
   release(threadTs: string): Promise<void>;
+  unsuppress(threadTs: string): Promise<void>;
   recentlyNagged(threadTss: string[], hours: number): Promise<Set<string>>;
   recordNag(threadTs: string, channelId: string): Promise<void>;
 }
@@ -244,19 +249,28 @@ export function createReminderManager(store: ReminderStore, transport: ReminderT
     act(input: {
       sourceChannelId: string;
       threadTs: string;
-      action: "suppressed" | "assigned" | "released";
+      action: "suppressed" | "assigned" | "released" | "unsuppressed";
       actor: string;
       assignee?: string;
+      /** Admin edits carry the last observed action version; Slack buttons omit it. */
+      expectedActionedAt?: string | null;
       roster: ReminderRosterEntry[];
       clicked: { channelId: string; deliveryTs: string; blocks: unknown[] };
     }) {
       return store.withLock(async () => {
         const { sourceChannelId, threadTs, roster, clicked } = input;
+        const current = (await store.getActions([threadTs])).get(threadTs);
+        if (input.expectedActionedAt !== undefined && (current?.actionedAt.toISOString() ?? null) !== input.expectedActionedAt) {
+          throw new ReminderConflictError("This thread changed. Refresh it before editing.");
+        }
         const tracked = await store.listDeliveries(sourceChannelId);
         const clickedKnown = tracked.some((row) => row.channelId === clicked.channelId && row.deliveryTs === clicked.deliveryTs);
         const clickedTracked = tracked.some((row) => row.channelId === clicked.channelId && row.deliveryTs === clicked.deliveryTs && row.threadTs === threadTs);
-        if (input.action === "released") {
-          const current = (await store.getActions([threadTs])).get(threadTs);
+        if (input.action === "unsuppressed") {
+          if (current?.action !== "suppressed") throw new ReminderConflictError("This thread is no longer suppressed.");
+          await store.unsuppress(threadTs);
+          await removeThread(tracked, threadTs, roster);
+        } else if (input.action === "released") {
           // A release from an old DM must not undo a newer suppression.
           if (current?.action === "assigned") await store.release(threadTs);
           await removeThread(tracked, threadTs, roster);
@@ -265,11 +279,11 @@ export function createReminderManager(store: ReminderStore, transport: ReminderT
           await removeThread(tracked, threadTs, roster);
         } else {
           if (!input.assignee) throw new Error("Assignment requires an assignee");
-          const prior = (await store.getActions([threadTs])).get(threadTs);
+          const prior = current;
           if (!clickedTracked && prior?.action === "assigned" && prior.assigneeUserId === input.assignee && tracked.some((row) => row.threadTs === threadTs && row.kind === "assignment_dm" && row.recipientUserId === input.assignee)) {
             // Slack can retry a slow action after its original message has
             // already been rewritten. Do not send the same assignment twice.
-            if (!clickedKnown) await transport.removeLegacyItem(clicked.channelId, clicked.deliveryTs, threadTs, clicked.blocks);
+            if (!clickedKnown && clicked.channelId && clicked.deliveryTs) await transport.removeLegacyItem(clicked.channelId, clicked.deliveryTs, threadTs, clicked.blocks);
             return;
           }
           const item = await store.getThread(sourceChannelId, threadTs) ?? await transport.fetchThread(sourceChannelId, threadTs);

@@ -46,6 +46,7 @@ function fixture() {
     async getActions(tss) { return new Map(tss.flatMap((ts) => actions.has(ts) ? [[ts, actions.get(ts)!]] : [])); },
     async saveAction(ts, _channel, action, _actor, assignee) { actions.set(ts, { action, assigneeUserId: assignee ?? null, actionedAt: new Date(3000_000) }); },
     async release(ts) { actions.delete(ts); recent.delete(ts); },
+    async unsuppress(ts) { actions.delete(ts); recent.delete(ts); },
     async recentlyNagged(tss) { return new Set(tss.filter((ts) => recent.has(ts))); },
     async recordNag(ts) { recent.add(ts); },
   };
@@ -288,4 +289,27 @@ void test("release from an old DM cannot erase a newer suppression", async () =>
   assert.equal(f.actions.get(row.threadTs)?.action, "suppressed");
   assert.equal(f.recent.has(row.threadTs), true);
   assert.equal(f.deliveries.length, 0);
+});
+
+void test("admin unsuppress clears only suppression and cooldown, without losing sibling reminders", async () => {
+  const f = fixture();
+  const [row, sibling] = f.seed("channel_digest", ["1000.000001", "2000.000002"]);
+  f.actions.set(row.threadTs, { action: "suppressed", assigneeUserId: null, actionedAt: new Date(3000_000) });
+  f.recent.add(row.threadTs);
+  await f.manager.act({ sourceChannelId: row.sourceChannelId, threadTs: row.threadTs, action: "unsuppressed", actor: "nav:ADMIN", expectedActionedAt: new Date(3000_000).toISOString(), roster: [], clicked: { channelId: row.sourceChannelId, deliveryTs: "", blocks: [] } });
+  assert.equal(f.actions.has(row.threadTs), false);
+  assert.equal(f.recent.has(row.threadTs), false);
+  assert.equal(f.deliveries.length, 1);
+  assert.equal(f.deliveries[0].threadTs, sibling.threadTs);
+  assert.equal(f.operations.some((op) => op.operation === "legacy"), false);
+});
+
+void test("stale admin mutation conflicts before changing state or Slack deliveries", async () => {
+  const f = fixture();
+  const [row] = f.seed("assignment_dm", ["1000.000001"], "U_TEAM");
+  f.actions.set(row.threadTs, { action: "assigned", assigneeUserId: "U_TEAM", actionedAt: new Date(3000_000) });
+  await assert.rejects(f.manager.act({ sourceChannelId: row.sourceChannelId, threadTs: row.threadTs, action: "unsuppressed", actor: "nav:ADMIN", expectedActionedAt: new Date(2000_000).toISOString(), roster: [], clicked: { channelId: row.sourceChannelId, deliveryTs: "", blocks: [] } }), /changed/);
+  assert.equal(f.actions.get(row.threadTs)?.action, "assigned");
+  assert.equal(f.operations.length, 0);
+  await assert.rejects(f.manager.act({ sourceChannelId: row.sourceChannelId, threadTs: row.threadTs, action: "unsuppressed", actor: "nav:ADMIN", expectedActionedAt: new Date(3000_000).toISOString(), roster: [], clicked: { channelId: row.sourceChannelId, deliveryTs: "", blocks: [] } }), /no longer suppressed/);
 });

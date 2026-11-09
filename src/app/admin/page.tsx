@@ -1,5 +1,10 @@
 import { headers } from "next/headers";
-import { Alert, BodyShort, Heading, Page, VStack } from "@navikt/ds-react";
+import { BodyShort, Heading, LocalAlert, VStack } from "@navikt/ds-react";
+import {
+  LocalAlertHeader,
+  LocalAlertTitle,
+  LocalAlertContent,
+} from "@navikt/ds-react/LocalAlert";
 import { PageBlock } from "@navikt/ds-react/Page";
 import { requireAdmin } from "../../lib/auth";
 import { AdminClient } from "./AdminClient";
@@ -21,22 +26,37 @@ export default async function AdminPage() {
           </Heading>
 
           {auth.status === "unauthenticated" && (
-            <Alert variant="warning">
-              Not logged in. Log in with your Nav account.
-            </Alert>
+            <LocalAlert status="warning">
+              <LocalAlertHeader>
+                <LocalAlertTitle>Not logged in</LocalAlertTitle>
+              </LocalAlertHeader>
+              <LocalAlertContent>
+                Log in with your Nav account.
+              </LocalAlertContent>
+            </LocalAlert>
           )}
 
           {auth.status === "forbidden" && (
-            <Alert variant="error">
-              Admins only. Ask an existing admin to add your team under
-              &quot;Who can admin&quot;.
-            </Alert>
+            <LocalAlert status="error">
+              <LocalAlertHeader>
+                <LocalAlertTitle>Admins only</LocalAlertTitle>
+              </LocalAlertHeader>
+              <LocalAlertContent>
+                Admins only. Ask an existing admin to add your team under
+                &quot;Who can admin&quot;.
+              </LocalAlertContent>
+            </LocalAlert>
           )}
 
           {auth.status === "unavailable" && (
-            <Alert variant="error">
-              Could not verify team membership. Try again later.
-            </Alert>
+            <LocalAlert status="error">
+              <LocalAlertHeader>
+                <LocalAlertTitle>
+                  Could not verify team membership
+                </LocalAlertTitle>
+              </LocalAlertHeader>
+              <LocalAlertContent>Try again later.</LocalAlertContent>
+            </LocalAlert>
           )}
 
           {auth.status === "ok" && (

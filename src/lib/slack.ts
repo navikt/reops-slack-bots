@@ -5,6 +5,7 @@ import { graceEligibleTs } from "./work-hours";
 import { DEFAULT_HANDLED_EMOJIS, hasHandledReaction } from "./handled-emojis";
 import { removeDigestItem, type MessageBlock } from "./digest-item-removal";
 import { MAX_REMINDER_ITEMS, type ReminderDelivery, type ReminderDestination, type ReminderItem } from "./reminders";
+import { type ChannelIdentity, type PersonIdentity } from "./admin-diagnostics";
 
 export { isThreadHandled } from "./thread-handled";
 
@@ -367,7 +368,7 @@ export async function fetchOldUnsolvedMessages(
 const EMAIL_CACHE_TTL_MS = 60 * 60 * 1000;
 const emailToUserCache = new Map<string, { uid: string | null; cachedAt: number }>();
 
-export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<string>> {
+export async function resolveEmailsToUserIds(emails: string[], strict = false): Promise<Set<string>> {
   const ids = new Set<string>();
   const now = Date.now();
 
@@ -391,6 +392,11 @@ export async function resolveEmailsToUserIds(emails: string[]): Promise<Set<stri
         logDebug({ event: "slack.email_unresolved", email });
       }
     } catch (err) {
+      if ((err as { data?: { error?: string } }).data?.error === "users_not_found") {
+        emailToUserCache.set(key, { uid: null, cachedAt: now });
+        continue;
+      }
+      if (strict && !cached?.uid) throw err;
       // Do NOT cache — a transient API failure is not a verdict on the
       // email. Fall back to a stale-but-real cached answer if we have one,
       // so one bad call doesn't un-ignore someone we previously resolved.
@@ -420,35 +426,72 @@ export async function expandIgnoreSet(emails: string[]): Promise<Set<string>> {
  * change rarely). Falls back to the raw UID on any failure — the digest
  * stays readable either way.
  */
-const userLabelCache = new Map<string, { label: string; cachedAt: number }>();
+const userLabelCache = new Map<string, { identity: PersonIdentity; cachedAt: number }>();
 const USER_LABEL_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Shared cached identities for reminder previews and admin diagnostics. */
+export async function resolveSlackUsers(userIds: string[]): Promise<Record<string, PersonIdentity>> {
+  const out: Record<string, PersonIdentity> = {};
+  const now = Date.now();
+  const unique = [...new Set(userIds)];
+  for (let offset = 0; offset < unique.length; offset += 4) {
+    await Promise.all(unique.slice(offset, offset + 4).map(async (uid) => {
+      const cached = userLabelCache.get(uid);
+      if (cached && now - cached.cachedAt < USER_LABEL_TTL_MS) {
+        out[uid] = cached.identity;
+        return;
+      }
+      if (!/^[UW][A-Z0-9]+$/.test(uid)) {
+        out[uid] = { id: uid, name: uid.startsWith("nav:") ? "Nav admin" : uid === "reops-bot" ? "Bot" : "Unknown actor", email: null, resolved: false };
+        return;
+      }
+      try {
+        const res = await slackCall("users.info", (web) => web.users.info({ user: uid }));
+        const profile = res.user?.profile;
+        const name = profile?.real_name || res.user?.real_name || profile?.display_name || res.user?.name;
+        const identity: PersonIdentity = { id: uid, name: name || "Unknown Slack user", email: profile?.email ?? null, resolved: Boolean(name) };
+        if (identity.resolved) userLabelCache.set(uid, { identity, cachedAt: now });
+        out[uid] = identity;
+      } catch {
+        out[uid] = cached?.identity ?? { id: uid, name: "Unknown Slack user", email: null, resolved: false };
+      }
+    }));
+  }
+  return out;
+}
+
+const channelIdentityCache = new Map<string, { identity: ChannelIdentity; at: number }>();
+
+export async function resolveSlackChannels(channelIds: string[], known: JoinedChannel[]): Promise<Record<string, ChannelIdentity>> {
+  const now = Date.now();
+  for (const channel of known) channelIdentityCache.set(channel.id, { identity: { id: channel.id, name: channel.name, isPrivate: channel.isPrivate, isDm: false, resolved: true }, at: now });
+  const out: Record<string, ChannelIdentity> = {};
+  for (const id of [...new Set(channelIds)]) {
+    const cached = channelIdentityCache.get(id);
+    if (cached && now - cached.at < USER_LABEL_TTL_MS) { out[id] = cached.identity; continue; }
+    try {
+      const res = await slackCall("conversations.info", (web) => web.conversations.info({ channel: id }));
+      const channel = res.channel;
+      const isDm = channel?.is_im === true;
+      const recipient = channel && "user" in channel && typeof channel.user === "string" ? channel.user : null;
+      const person = recipient ? (await resolveSlackUsers([recipient]))[recipient] : null;
+      const name = isDm ? `DM · ${person?.name ?? "Unknown recipient"}` : channel?.name;
+      const identity: ChannelIdentity = { id, name: name || "Unknown channel", isPrivate: channel?.is_private === true, isDm, resolved: Boolean(name) && (!isDm || Boolean(person?.resolved)) };
+      out[id] = identity;
+      if (identity.resolved) channelIdentityCache.set(id, { identity, at: now });
+    } catch {
+      out[id] = cached?.identity ?? { id, name: id.startsWith("D") ? "Direct message" : "Unknown channel", isPrivate: false, isDm: id.startsWith("D"), resolved: false };
+    }
+  }
+  return out;
+}
 
 export async function resolveUserLabels(
   userIds: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  const now = Date.now();
-  for (const uid of [...new Set(userIds)]) {
-    const cached = userLabelCache.get(uid);
-    if (cached && now - cached.cachedAt < USER_LABEL_TTL_MS) {
-      out.set(uid, cached.label);
-      continue;
-    }
-    try {
-      const res = await slackCall("users.info", (web) =>
-        web.users.info({ user: uid }),
-      );
-      const label =
-        res.user?.profile?.display_name ||
-        res.user?.real_name ||
-        res.user?.name ||
-        uid;
-      userLabelCache.set(uid, { label, cachedAt: now });
-      out.set(uid, label);
-    } catch {
-      out.set(uid, uid); // don't cache failures — next scan retries
-    }
-  }
+  const people = await resolveSlackUsers(userIds);
+  for (const uid of [...new Set(userIds)]) out.set(uid, people[uid]?.resolved ? people[uid].name : uid);
   return out;
 }
 
@@ -605,8 +648,9 @@ function buildDigestBlocks(
  */
 export async function listAssigneeOptions(
   emails: string[],
+  strict = false,
 ): Promise<AssigneeOption[]> {
-  const uids = [...(await resolveEmailsToUserIds(emails))];
+  const uids = [...(await resolveEmailsToUserIds(emails, strict))];
   const labels = await resolveUserLabels(uids);
   return uids
     .map((uid) => ({ userId: uid, label: labels.get(uid) ?? uid }))
@@ -673,21 +717,34 @@ export async function updateReminderDelivery(delivery: ReminderDelivery, items: 
 
 /** Canonical Slack preview fallback for pre-migration/untracked reminders. */
 export async function fetchReminderThread(sourceChannelId: string, threadTs: string): Promise<UnsolvedReminderItem> {
+  return (await inspectReminderThread(sourceChannelId, threadTs, new Set())).item;
+}
+
+/** Read the full conversation on demand, independently of the reminder grace window. */
+export async function inspectReminderThread(sourceChannelId: string, threadTs: string, handledEmojis: ReadonlySet<string>) {
   let cursor: string | undefined;
-  let latest: { ts?: string; user?: string; text?: string } | undefined;
+  const messages: Array<{ ts?: string; user?: string; text?: string; reactions?: Array<{ name?: string }> }> = [];
   do {
     const res = await slackCall("conversations.replies", (web) => web.conversations.replies({ channel: sourceChannelId, ts: threadTs, limit: 200, cursor }));
-    for (const message of res.messages ?? []) if (message.ts) latest = message;
+    for (const message of res.messages ?? []) if (message.ts) messages.push(message);
     cursor = res.response_metadata?.next_cursor || undefined;
   } while (cursor);
-  if (!latest?.ts) throw new Error("Original Slack thread not found");
+  const parent = messages[0];
+  const latest = messages[messages.length - 1];
+  if (!parent?.ts || !parent.user || !latest?.ts || parent.ts !== threadTs) throw new Error("Original Slack thread not found");
   const labels = await resolveUserLabels(latest.user ? [latest.user] : []);
   return {
     ts: threadTs,
-    permalink: buildPermalink(sourceChannelId, latest.ts, latest.ts === threadTs ? undefined : threadTs),
-    text: latest.text ?? "",
-    authorLabel: latest.user ? labels.get(latest.user) ?? latest.user : "?",
-    imageUrl: null,
+    user: parent.user ?? "",
+    parentSolved: hasHandledReaction(parent.reactions, handledEmojis),
+    latestReplies: messages.slice(1).map((reply) => ({ user: reply.user ?? null, ts: Number(reply.ts), solved: hasHandledReaction(reply.reactions, handledEmojis) })),
+    item: {
+      ts: threadTs,
+      permalink: buildPermalink(sourceChannelId, latest.ts, latest.ts === threadTs ? undefined : threadTs),
+      text: latest.text ?? "",
+      authorLabel: latest.user ? labels.get(latest.user) ?? latest.user : "?",
+      imageUrl: null,
+    },
   };
 }
 

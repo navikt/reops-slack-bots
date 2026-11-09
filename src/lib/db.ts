@@ -283,7 +283,8 @@ export async function listNagSuppressed(
     })
     .from(nagLog)
     .where(sql`${nagLog.lastNaggedAt} > now() - (${String(cooldownHours)} || ' hours')::interval`)
-    .orderBy(asc(nagLog.lastNaggedAt));
+    .orderBy(asc(nagLog.lastNaggedAt))
+    .limit(200);
   return rows.map((r) => ({
     message_ts: r.messageTs,
     channel_id: r.channelId,

@@ -12,7 +12,9 @@ import {
   listRecentNagLog,
   listThreadActions,
 } from "../../../../lib/db";
-import { listJoinedChannels, resolveEmailsToUserIds } from "../../../../lib/slack";
+import { buildPermalink, listAssigneeOptions, listJoinedChannels, resolveEmailsToUserIds, resolveSlackChannels, resolveSlackUsers, type AssigneeOption } from "../../../../lib/slack";
+import { buildDiagnosticThreads } from "../../../../lib/admin-diagnostics";
+import { diagnosticTracking } from "../../../../lib/admin-diagnostics-store";
 import { logError } from "../../../../lib/log";
 import { getHandledEmojis, HANDLED_EMOJIS_SETTING } from "../../../../lib/handled-emojis";
 
@@ -30,6 +32,7 @@ export async function GET(req: Request): Promise<Response> {
     const status = auth.status === "forbidden" ? 403 : auth.status === "unavailable" ? 503 : 401;
     return NextResponse.json({ error: auth.status }, { status });
   }
+  const includeDiagnostics = new URL(req.url).searchParams.get("view") === "diagnostics";
 
   const reNagHoursRaw = await getSetting("re_nag_hours");
   const reNagHoursNum = Number.parseFloat(reNagHoursRaw ?? String(7 * 24));
@@ -47,7 +50,7 @@ export async function GET(req: Request): Promise<Response> {
       listAdminGroups(),
       listAdminPersons(),
       getNagLogCount(),
-      listRecentNagLog(10),
+      listRecentNagLog(200),
       getTableCounts(),
       listNagSuppressed(Number.isNaN(reNagHoursNum) ? 7 * 24 : reNagHoursNum),
       listThreadActions(),
@@ -110,6 +113,7 @@ export async function GET(req: Request): Promise<Response> {
     slackUserId: string | null;
     ignored: boolean;
   } | null = null;
+  let assignees: AssigneeOption[] = [];
   try {
     const groupEmailLists = await Promise.all(
       groups.map(async (g) => {
@@ -126,6 +130,7 @@ export async function GET(req: Request): Promise<Response> {
         ...groupEmailLists.flat(),
       ]),
     ];
+    if (includeDiagnostics && !isFrozen) assignees = await listAssigneeOptions(ignoreEmails);
     const email = auth.user.email ?? null;
     let slackUserId: string | null = null;
     if (email && !isFrozen) {
@@ -145,6 +150,24 @@ export async function GET(req: Request): Promise<Response> {
     });
   }
 
+  const tracking = includeDiagnostics ? await diagnosticTracking() : { snapshots: [], deliveries: [] };
+  const effectiveSource = sourceChannelId ?? process.env.RESEARCHOPS_CHANNEL_ID ?? null;
+  const effectiveTarget = targetChannelId ?? process.env.RESEARCHOPS_INTERN_CHANNEL_ID ?? null;
+  const actions = threadActionsRaw.map((row) => ({ ...row, actioned_at: row.actioned_at.toISOString() }));
+  const nags = nagLogRecentRaw.map((row) => ({ ...row, last_nagged_at: row.last_nagged_at.toISOString() }));
+  const cooldowns = nagSuppressedRaw.map((row) => ({ ...row, next_eligible_at: row.next_eligible_at.toISOString() }));
+  const people = await resolveSlackUsers(includeDiagnostics ? [...actions.flatMap((row) => [row.actor_user_id, ...(row.assignee_user_id ? [row.assignee_user_id] : [])]), ...assignees.map((row) => row.userId)] : []);
+  people[`nav:${auth.user.navIdent}`] = { id: `nav:${auth.user.navIdent}`, name: auth.user.name || "Nav admin", email: auth.user.email ?? null, resolved: true };
+  const channelIdentities = await resolveSlackChannels([
+    ...(includeDiagnostics ? [...actions.map((row) => row.channel_id), ...nags.map((row) => row.channel_id)] : []),
+    ...tracking.deliveries.flatMap((row) => [row.channelId, row.sourceChannelId]),
+    ...(effectiveSource ? [effectiveSource] : []), ...(effectiveTarget ? [effectiveTarget] : []),
+  ].filter(Boolean), channels);
+  const diagnostics = includeDiagnostics ? buildDiagnosticThreads({
+    actions, nags, cooldowns, ...tracking, people, channels: channelIdentities,
+    configuredSource: effectiveSource, permalink: buildPermalink,
+  }) : [];
+
   return NextResponse.json({
     frozen: isFrozen,
     scanWindowDays: Number.parseInt(scanWindowDays ?? "14", 10),
@@ -159,8 +182,8 @@ export async function GET(req: Request): Promise<Response> {
       navIdent: r.nav_ident,
       email: r.email,
     })),
-    sourceChannelId: sourceChannelId || null,
-    targetChannelId: targetChannelId || null,
+    sourceChannelId: effectiveSource || null,
+    targetChannelId: effectiveTarget || null,
     channels,
     channelsError,
     lastScan,
@@ -169,7 +192,7 @@ export async function GET(req: Request): Promise<Response> {
     adminPersons,
     adminBootstrap: adminGroups.length === 0 && adminPersons.length === 0,
     nagLogCount,
-    nagLogRecent: nagLogRecentRaw.map((r) => ({
+    nagLogRecent: nagLogRecentRaw.slice(0, 10).map((r) => ({
       message_ts: r.message_ts,
       channel_id: r.channel_id,
       last_nagged_at: r.last_nagged_at.toISOString(),
@@ -189,5 +212,9 @@ export async function GET(req: Request): Promise<Response> {
     })),
     tableCounts,
     you,
+    diagnostics,
+    assignees: assignees.map((entry) => ({ userId: entry.userId, label: people[entry.userId]?.name ?? entry.label })),
+    channelIdentities,
+    people,
   });
 }

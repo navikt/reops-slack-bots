@@ -72,6 +72,32 @@ Without `DATABASE_URL` the server starts but migrations/jobs are skipped.
 - **Admin auth** — Azure AD + Team Catalog only work behind naisdevice or
   deployed; use `ADMIN_DEV_BYPASS=true` locally.
 
+## Admin diagnostics and access lists
+
+`/admin/diagnostics` is a separate wide view linked from Advanced settings.
+It uses Aksel's preview DataGrid with sorting/filtering, human Slack identities,
+relative thread ages, expandable copyable IDs/ISO timestamps, and a sticky
+right-side Actions menu. Content columns absorb unused width through Aksel's
+controlled column-width API, so Actions stays at the right edge even when the
+grid doesn't need to scroll. Groups and individuals use the same aligned grid
+on the settings page; groups come first, and one shared search input stays below
+the list. Selecting a person or group adds it immediately.
+
+Diagnostics distinguish saved manual actions from actual Slack status. Expanding
+a thread or choosing **Check Slack status** reads the conversation on demand and
+shows when it was checked; unavailable Slack/Team Catalog data is never labelled
+handled/open by guesswork. **Unsuppress**, **Release to channel**, and
+**Assign/Reassign** use the shared reminder manager, validate assignees against
+the configured team, and reject stale edits. Unsuppress removes only the manual
+suppression/cooldown; it does not override handled reactions or team replies.
+
+`POST /api/admin/thread-actions` requires admin authentication and JSON, returns
+Problem Details for errors, and records the authenticated actor rather than an
+actor supplied by the browser. Actions/status checks are paused while the bot is
+off. `GET /api/admin/state?view=diagnostics` opts into preview/identity enrichment;
+ordinary settings requests avoid those additional lookups. No schema migration
+or package upgrade is required for this UI change.
+
 ## Architecture
 
 Next.js on Nais, Postgres (Drizzle ORM). Cron-on-boot: `instrumentation.ts`

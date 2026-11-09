@@ -1,12 +1,29 @@
 import { headers } from "next/headers";
-import { Alert, BodyLong, BodyShort, Heading, Link, List, Page, VStack } from "@navikt/ds-react";
+import {
+  BodyLong,
+  BodyShort,
+  Heading,
+  Link,
+  List,
+  LocalAlert,
+  VStack,
+} from "@navikt/ds-react";
 import { PageBlock } from "@navikt/ds-react/Page";
+import {
+  LocalAlertHeader,
+  LocalAlertTitle,
+  LocalAlertContent,
+} from "@navikt/ds-react/LocalAlert";
 // RSC can't serialize dot-notation (<List.Item>) — import the component directly.
 import { ListItem } from "@navikt/ds-react/List";
 import { getSetting } from "../lib/db";
 import { listJoinedChannels } from "../lib/slack";
 import { requireAdmin } from "../lib/auth";
-import { DEFAULT_HANDLED_EMOJIS, getHandledEmojis, HANDLED_EMOJIS_SETTING } from "../lib/handled-emojis";
+import {
+  DEFAULT_HANDLED_EMOJIS,
+  getHandledEmojis,
+  HANDLED_EMOJIS_SETTING,
+} from "../lib/handled-emojis";
 
 export const dynamic = "force-dynamic";
 
@@ -76,14 +93,19 @@ export default async function HomePage() {
           </Heading>
 
           {frozen && (
-            <Alert variant="info">
-              The bot is paused by the team.
-            </Alert>
+            <LocalAlert status="announcement">
+              <LocalAlertHeader>
+                <LocalAlertTitle as="div">Bot paused</LocalAlertTitle>
+              </LocalAlertHeader>
+              <LocalAlertContent>
+                The bot is paused by the team.
+              </LocalAlertContent>
+            </LocalAlert>
           )}
 
           <BodyLong>
-            <strong>@reops</strong> tracks unanswered questions in your
-            channels and nags the team until they are handled.
+            <strong>@reops</strong> tracks unanswered questions in your channels
+            and nags the team until they are handled.
           </BodyLong>
 
           <Heading level="2" size="medium">
@@ -91,31 +113,40 @@ export default async function HomePage() {
           </Heading>
           <BodyLong>
             On a regular schedule, the bot checks{" "}
-            {source ? <strong>{source}</strong> : "the chosen channel"} for messages
-            still awaiting an answer after a grace period of {formatHours(graceHours)} of
-            work time (Mon–Fri 09:00–16:30 — an evening post becomes due the next
-            workday morning). Hits are collected into a digest{" "}
-            {target ? <>in <strong>{target}</strong></> : "in the reminder channel"} —
-            a link per message, which Slack expands into a preview. A message counts
-            as answered when:
+            {source ? <strong>{source}</strong> : "the chosen channel"} for
+            messages still awaiting an answer after a grace period of{" "}
+            {formatHours(graceHours)} of work time (Mon–Fri 09:00–16:30 — an
+            evening post becomes due the next workday morning). Hits are
+            collected into a digest{" "}
+            {target ? (
+              <>
+                in <strong>{target}</strong>
+              </>
+            ) : (
+              "in the reminder channel"
+            )}{" "}
+            — a link per message, which Slack expands into a preview. A message
+            counts as answered when:
           </BodyLong>
           <List>
             {handledEmojis.length > 0 && (
               <ListItem>
-                a configured handled reaction marks it — {handledEmojis.map((name) => `:${name}:`).join(", ")} on the
+                a configured handled reaction marks it —{" "}
+                {handledEmojis.map((name) => `:${name}:`).join(", ")} on the
                 original message or any thread reply, set by team or asker, or
               </ListItem>
             )}
             <ListItem>a team member wrote the last thread reply.</ListItem>
           </List>
           <BodyLong>
-            Handling is recency-based: a follow-up question from a non-team member
-            re-opens the thread. A later team reply or configured handled reaction
-            marks it handled again.
+            Handling is recency-based: a follow-up question from a non-team
+            member re-opens the thread. A later team reply or configured handled
+            reaction marks it handled again.
           </BodyLong>
           <BodyLong>
-            Unanswered messages re-appear in the digest every {formatHours(reNagHours)}{" "}
-            until handled, and are ignored once older than {scanWindowDays} days.
+            Unanswered messages re-appear in the digest every{" "}
+            {formatHours(reNagHours)} until handled, and are ignored once older
+            than {scanWindowDays} days.
           </BodyLong>
 
           <Heading level="2" size="medium">
@@ -123,8 +154,15 @@ export default async function HomePage() {
           </Heading>
           <List>
             <ListItem>
-              Answered? Reply in the thread{handledEmojis.length > 0 ? ", or add one of the configured handled reactions to the message" : ""}.
-              A team reply{handledEmojis.length > 0 ? " or handled reaction marks" : " marks"} it handled until someone asks a follow-up.
+              Answered? Reply in the thread
+              {handledEmojis.length > 0
+                ? ", or add one of the configured handled reactions to the message"
+                : ""}
+              . A team reply
+              {handledEmojis.length > 0
+                ? " or handled reaction marks"
+                : " marks"}{" "}
+              it handled until someone asks a follow-up.
             </ListItem>
             <ListItem>
               Add the bot to a channel: <code>/invite @reops</code>.

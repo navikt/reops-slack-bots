@@ -89,6 +89,14 @@ export const reminderStore: ReminderStore = {
       if (removed.length) await tx.delete(nagLog).where(eq(nagLog.messageTs, threadTs));
     });
   },
+  async unsuppress(threadTs) {
+    await getDb().transaction(async (tx) => {
+      const removed = await tx.delete(threadActions)
+        .where(and(eq(threadActions.messageTs, threadTs), eq(threadActions.action, "suppressed")))
+        .returning({ messageTs: threadActions.messageTs });
+      if (removed.length) await tx.delete(nagLog).where(eq(nagLog.messageTs, threadTs));
+    });
+  },
   recentlyNagged: getRecentlyNaggedTs,
   recordNag: upsertNagLog,
 };
