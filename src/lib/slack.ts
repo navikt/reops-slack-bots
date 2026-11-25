@@ -498,7 +498,7 @@ export async function resolveUserLabels(
 
 export type UnsolvedReminderItem = ReminderItem;
 
-/** One entry in the "Assign to…" roster — a team member who can own a
+/** One entry in the assignee roster — a team member who can own a
  * thread (the ignore set: persons + group members). Static select options
  * must stay ≤ Slack's per-menu cap; a team-sized roster is fine. */
 export interface AssigneeOption {
@@ -506,7 +506,7 @@ export interface AssigneeOption {
   label: string;
 }
 
-/** action_id for the per-item Suppress button; value carries the thread ts. */
+/** action_id for the per-item handled button; value carries the thread ts. */
 export const DIGEST_SUPPRESS_ACTION = "digest_suppress";
 /** action_id for the Assign-to user picker; selected_user carries the UID. */
 export const DIGEST_ASSIGN_ACTION = "digest_assign";
@@ -557,7 +557,7 @@ type DigestBlock =
  * Custom "previews" instead of native unfurls. Each item renders as:
  *   section — *author* · age of linked message · åpne tråd
  *   context — excerpt, with thread age as secondary context
- *   actions — [Suppress] button directly under its preview
+ *   actions — handled button and optional assignee picker under the preview
  *   divider
  * Posting passes unfurl_links:false, so native previews never batch below
  * the message and every button stays glued to its item.
@@ -605,7 +605,7 @@ function buildDigestBlocks(
     const elements: Extract<DigestBlock, { type: "actions" }>["elements"] = [
       {
         type: "button",
-        text: { type: "plain_text", text: "Suppress" },
+        text: { type: "plain_text", text: "Marker som håndtert" },
         action_id: DIGEST_SUPPRESS_ACTION,
         value: m.ts,
       },
@@ -621,7 +621,7 @@ function buildDigestBlocks(
       elements.push({
         type: "static_select",
         action_id: DIGEST_ASSIGN_ACTION,
-        placeholder: { type: "plain_text", text: "Assign to…" },
+        placeholder: { type: "plain_text", text: "Tildel til kollega …" },
         options,
         ...(initial ? { initial_option: initial } : {}),
       });
@@ -641,7 +641,7 @@ function buildDigestBlocks(
 }
 
 /**
- * Builds the "Assign to…" roster from raw emails: resolve to UIDs, attach
+ * Builds the assignee roster from raw emails: resolve to UIDs, attach
  * display labels, sort alphabetically. Shared by the scan (digest posting)
  * and the interactions webhook (DM renders).
  */
@@ -660,7 +660,7 @@ export async function listAssigneeOptions(
 function buildReminderBlocks(destination: ReminderDestination, items: UnsolvedReminderItem[], total: number, part: number, parts: number, roster: AssigneeOption[]) {
   const assignment = destination.kind === "assignment_dm";
   const rendered = buildDigestBlocks(items, total, part, parts, Date.now(),
-    assignment ? [{ userId: DIGEST_RELEASE_VALUE, label: "I don't know / release" }, ...roster] : roster,
+    assignment ? [{ userId: DIGEST_RELEASE_VALUE, label: "Send tilbake til kanalen" }, ...roster] : roster,
     assignment ? destination.recipientUserId : null,
   );
   if (assignment) {

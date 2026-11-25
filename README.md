@@ -4,8 +4,8 @@ Internal Slack automation for Team ResearchOps at Nav. One Slack app
 (**reops**) hosts multiple **behaviors** (jobs under `src/bots/<behavior>/`).
 Currently one behavior: **unanswered-reminder** — scans a channel for old
 messages without a configured handled reaction (or a reply from a member in a set)
-and posts a digest (with Suppress /
-Assign-to controls) to an internal channel.
+and posts a digest with **Marker som håndtert** and **Tildel til kollega …**
+controls to an internal channel.
 
 ## Requirements
 
@@ -130,9 +130,9 @@ A message counts as unanswered only if ALL hold:
   grace for off-hours posts starts at next workday 09:00 (work hours
   Mon–Fri 09:00–16:30; Friday-evening post → due Monday 10:00)
 - author not on the ignore list (manual emails + Team Catalog group members)
-- not handled: team last-reply, a newer Suppress mark, or a configured handled reaction (parent
+- not handled: team last-reply, a newer manual handled mark, or a configured handled reaction (parent
   or reply, anyone) — recency decides, so a non-team follow-up re-opens the
-  thread (`src/lib/thread-handled.ts`). **Assign to…** routes the thread to a
+  thread (`src/lib/thread-handled.ts`). **Tildel til kollega …** routes the thread to a
   member's DM; newer thread activity re-opens it to the channel
 - not nagged within `re_nag_hours` (default 7d; `nag_log`)
 
@@ -144,7 +144,7 @@ including when you remove the final chip. **Reset to default** restores and save
 the default list. Defaults to
 `raised_hands`, `solved`, `dart`, `heart`, `heartpulse`, `meow_heart`, and
 `white_check_mark` only when no list has been saved. An empty saved list disables reaction
-handling, but team replies and Suppress still count. Changes apply on the next
+handling, but team replies and manual handled marks still count. Changes apply on the next
 scan without a restart and replace the entire list.
 
 Channel digests and assignment DMs share the reminder module
