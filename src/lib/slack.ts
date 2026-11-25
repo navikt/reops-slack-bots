@@ -6,6 +6,7 @@ import { DEFAULT_HANDLED_EMOJIS, hasHandledReaction } from "./handled-emojis";
 import { removeDigestItem, type MessageBlock } from "./digest-item-removal";
 import { MAX_REMINDER_ITEMS, type ReminderDelivery, type ReminderDestination, type ReminderItem } from "./reminders";
 import { type ChannelIdentity, type PersonIdentity } from "./admin-diagnostics";
+import { reminderAgeLabels } from "./reminder-age";
 
 export { isThreadHandled } from "./thread-handled";
 
@@ -512,13 +513,6 @@ export const DIGEST_ASSIGN_ACTION = "digest_assign";
 /** Sentinel select value: assignee releases the thread back to the channel. */
 export const DIGEST_RELEASE_VALUE = "release";
 
-function formatAge(ts: string, nowMs: number): string {
-  const hours = Math.max(0, Math.round((nowMs - Number(ts) * 1000) / 3_600_000));
-  if (hours < 48) return `${hours} ${hours === 1 ? "time" : "timer"}`;
-  const days = Math.round(hours / 24);
-  return `${days} ${days === 1 ? "dag" : "dager"}`;
-}
-
 function excerpt(text: string, max = 220): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
@@ -561,8 +555,8 @@ type DigestBlock =
  * Builds the blocks/text for one digest message — shared by post + update.
  *
  * Custom "previews" instead of native unfurls. Each item renders as:
- *   section — *author* · age · åpne tråd
- *   context — > excerpt of the previewed message (+ image thumb when present)
+ *   section — *author* · age of linked message · åpne tråd
+ *   context — excerpt, with thread age as secondary context
  *   actions — [Suppress] button directly under its preview
  *   divider
  * Posting passes unfurl_links:false, so native previews never batch below
@@ -585,11 +579,13 @@ function buildDigestBlocks(
   };
   const blocks: DigestBlock[] = [header, { type: "divider" }];
   for (const [i, m] of items.entries()) {
+    const age = reminderAgeLabels(m, nowMs);
+    const unanswered = age ? ` · ${age.unanswered}` : "";
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${m.authorLabel}* · ubesvart i ${formatAge(m.ts, nowMs)} · <${m.permalink}|åpne tråd>`,
+        text: `*${m.authorLabel}*${unanswered} · <${m.permalink}|åpne tråd>`,
       },
     });
     const quoteText =
@@ -598,6 +594,9 @@ function buildDigestBlocks(
       type: "context",
       elements: [{ type: "mrkdwn", text: `>${quoteText}` }],
     };
+    const threadContext = [age?.threadStarted, age?.oldButGold ? "`old but gold` :goldbars:" : null]
+      .filter(Boolean).join(" · ");
+    if (threadContext) quote.elements.push({ type: "mrkdwn", text: threadContext });
     blocks.push(quote);
     // static_select pre-filtered to the handler roster (ignore set) —
     // users_select would offer the whole workspace. selects carry no

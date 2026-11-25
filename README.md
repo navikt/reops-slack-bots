@@ -154,9 +154,12 @@ determine thread state; handling is evaluated before assignment routing.
 every rendered copy with its destination and recipient. Orphan previews outside
 the current open scan set are pruned; cached content is not permanent history.
 
-Both destinations use the same block renderer: author · age · excerpt · thread
-link, `unfurl_links:false`, ≤12 items per message. Re-reminding posts a fresh
-batch for that destination and only then retires its old messages. Assignment
+Both destinations show how long the linked message has been unanswered. If it
+links to a reply, the thread's age appears separately. Threads older than 365
+days get an `old but gold` badge if they fall within the scan window. Both
+destinations use `unfurl_links:false` and show up to 12 items per message.
+Re-reminding posts a fresh batch for that destination and only then retires
+its old messages. Assignment
 DMs consolidate a person's open items rather than accumulating old reminders.
 Scans without new reminders update existing messages in place. Handling,
 reassigning, or releasing a thread updates all tracked copies without removing
